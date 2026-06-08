@@ -106,6 +106,7 @@ footer{border-top:1px solid var(--rule);padding:.9rem 2.5rem;display:flex;justif
 
   <div id="dropzone">
     <input type="file" id="file-input" accept=".idml" style="display:none"/>
+    <input type="file" id="img-input" accept="image/*,.tif,.tiff,.eps" multiple style="display:none"/>
     <div class="dz-icon"><svg width="44" height="44" viewBox="0 0 44 44" fill="none"><path d="M22 10v18M14 18l8-8 8 8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 32v2a2 2 0 002 2h24a2 2 0 002-2v-2" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg></div>
     <div class="dz-main">Drop your <strong>.idml</strong> file here</div>
     <div class="dz-sub">or click to browse &mdash; runs entirely in your browser, nothing uploaded to any server</div>
@@ -115,6 +116,20 @@ footer{border-top:1px solid var(--rule);padding:.9rem 2.5rem;display:flex;justif
     <div class="fc-icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M13 2H6a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V9l-5-7z" stroke="currentColor" stroke-width="1.5"/><path d="M13 2v7h7" stroke="currentColor" stroke-width="1.5"/></svg></div>
     <div><div class="fc-name" id="fc-name"></div><div class="fc-size" id="fc-size"></div></div>
     <button id="file-remove" title="Remove"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+  </div>
+
+  <!-- Image upload panel -->
+  <div id="img-panel" style="display:none;margin-bottom:1.25rem;border:1px solid var(--rule);border-radius:8px;overflow:hidden">
+    <div style="padding:.55rem 1rem;background:var(--surface);border-bottom:1px solid var(--rule);font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);display:flex;justify-content:space-between;align-items:center">
+      <span>Step 2 — Add your image files <span style="color:var(--accent2);font-style:normal">(PNG, JPG, TIFF — must match IDML link filenames)</span></span>
+      <span id="img-count" style="color:var(--green)"></span>
+    </div>
+    <div id="img-dropzone" style="padding:1rem 1.25rem;cursor:pointer;background:var(--raised);transition:all .2s;border-bottom:1px dashed var(--rule)">
+      <div style="font-size:.82rem;color:var(--muted);margin-bottom:.25rem">&#128247; Drop image files here — or click to browse</div>
+      <div style="font-size:.68rem;color:var(--muted)">All linked image files from your InDesign Links folder. e.g. Image961.jpg, Untitled-1.tif, R &amp; D-1.tif</div>
+    </div>
+    <div id="img-file-list" style="padding:.5rem 1rem;display:flex;flex-wrap:wrap;gap:5px;min-height:28px"></div>
+    <div style="padding:.4rem 1rem;font-size:.65rem;background:var(--surface);border-top:1px solid var(--rule)" id="img-missing-list"></div>
   </div>
 
   <div id="error-panel"></div>
@@ -155,6 +170,39 @@ footer{border-top:1px solid var(--rule);padding:.9rem 2.5rem;display:flex;justif
 
 <script>
 'use strict';
+
+// ── Image file state ──────────────────────────────────────────
+const imageFiles = {};       // normalized-name → dataURL
+const imageLinks  = {};      // linkId → filename (from IDML parsing)
+const rectToLink  = {};      // rectangleSelf → linkId
+
+// Normalize a filename for fuzzy matching.
+// Handles URL-encoded names from IDML (e.g. R%20%26%20D-1.tif → r_d_1.tif)
+// and uploaded filenames with spaces, ampersands, hyphens (R & D-1.tif → r_d_1.tif).
+function normImageName(s) {
+  let n = String(s);
+  // Decode URL encoding (may need multiple passes for double-encoded)
+  try { n = decodeURIComponent(n); } catch(e) {}
+  try { n = decodeURIComponent(n); } catch(e) {}
+  return n
+    .toLowerCase()
+    .replace(/[^a-z0-9.]/g, '_')   // replace ALL non-alphanumeric (spaces, &, -, etc.) with _
+    .replace(/_+/g, '_')            // collapse multiple underscores
+    .replace(/^_|_(?=\.)/, '');     // trim leading _ and _ before extension
+}
+
+function findImage(linkFilename) {
+  if(!linkFilename) return null;
+  const target = normImageName(linkFilename);
+  for(const [k,v] of Object.entries(imageFiles)){
+    if(normImageName(k)===target) return v;
+    // also match without extension
+    const kNoExt = normImageName(k).replace(/\.[^.]+$/,'');
+    const tNoExt = target.replace(/\.[^.]+$/,'');
+    if(kNoExt===tNoExt) return v;
+  }
+  return null;
+}
 
 // ── Library guard ─────────────────────────────────────────────
 window.addEventListener('load', () => {
@@ -267,92 +315,121 @@ class IDMLXMLParser {
 // ── Style map ────────────────────────────────────────────────
 const STYLE_MAP = {
   paragraphStyles: {
-    "heading 1":       {tag:"h1",cls:"idml-h1"},
-    "heading 2":       {tag:"h2",cls:"idml-h2"},
-    "heading 3":       {tag:"h3",cls:"idml-h3"},
-    "heading 4":       {tag:"h4",cls:"idml-h4"},
-    "chapter title":   {tag:"h1",cls:"idml-chapter-title"},
-    "chapter number":  {tag:"p", cls:"idml-chapter-number"},
-    "section title":   {tag:"h2",cls:"idml-section-title"},
-    "sub-section":     {tag:"h3",cls:"idml-subsection"},
-    "subheading":      {tag:"h3",cls:"idml-subheading"},
-    "body text":       {tag:"p", cls:"idml-body"},
-    "body":            {tag:"p", cls:"idml-body"},
-    "normal":          {tag:"p", cls:"idml-body"},
-    "no paragraph style":{tag:"p",cls:"idml-body"},
-    "basic paragraph": {tag:"p", cls:"idml-body"},
-    "caption":         {tag:"figcaption",cls:"idml-caption"},
-    "figure caption":  {tag:"figcaption",cls:"idml-caption"},
-    "callout":         {tag:"blockquote",cls:"idml-callout"},
-    "pull quote":      {tag:"blockquote",cls:"idml-pullquote"},
-    "quote":           {tag:"blockquote",cls:"idml-quote"},
-    "list bullet":     {tag:"li",cls:"idml-list-bullet",listType:"ul"},
-    "bullet":          {tag:"li",cls:"idml-list-bullet",listType:"ul"},
-    "list number":     {tag:"li",cls:"idml-list-number",listType:"ol"},
-    "numbered":        {tag:"li",cls:"idml-list-number",listType:"ol"},
-    "note":            {tag:"aside",cls:"idml-note"},
-    "tip":             {tag:"aside",cls:"idml-tip"},
-    "warning":         {tag:"aside",cls:"idml-warning"},
-    "example":         {tag:"div", cls:"idml-example"},
-    "definition":      {tag:"dt",  cls:"idml-definition"},
-    "term":            {tag:"dt",  cls:"idml-term"},
-    "code":            {tag:"pre", cls:"idml-code"},
-    "footer":          {tag:"p",  cls:"idml-footer"},
-    "header":          {tag:"p",  cls:"idml-header"},
-    // ── Textbook custom styles (after group-prefix stripping) ──
-    "head 1 blue":     {tag:"h1", cls:"idml-h1"},
-    "head 2 orange":   {tag:"h2", cls:"idml-h2"},
-    "head-3":          {tag:"h3", cls:"idml-h3"},
-    "head-2":          {tag:"h2", cls:"idml-h2"},
-    "chapter name":    {tag:"h1", cls:"idml-chapter-title"},
-    "c_head 1":        {tag:"h1", cls:"idml-h1"},
-    "c_head 2":        {tag:"h2", cls:"idml-h2"},
-    "c_head-3":        {tag:"h3", cls:"idml-h3"},
-    "c_2-sub hed":     {tag:"h3", cls:"idml-subheading"},
-    "que text":        {tag:"p",  cls:"idml-question"},
-    "question text":   {tag:"p",  cls:"idml-question"},
-    "question":        {tag:"p",  cls:"idml-question"},
-    "c_question":      {tag:"p",  cls:"idml-question"},
-    "1-question":      {tag:"p",  cls:"idml-question"},
-    "c_question indent":{tag:"p", cls:"idml-question-indent"},
-    "question indent": {tag:"p",  cls:"idml-question-indent"},
-    "indent 1":        {tag:"p",  cls:"idml-indent"},
-    "indent 2":        {tag:"p",  cls:"idml-indent2"},
-    "sol text":        {tag:"p",  cls:"idml-solution"},
-    "solution":        {tag:"p",  cls:"idml-solution"},
-    "answer key":      {tag:"div",cls:"idml-answer-key"},
-    "answerkey&solutions":{tag:"div",cls:"idml-answer-key"},
-    "option-2":        {tag:"li", cls:"idml-option", listType:"ol"},
-    "option-4":        {tag:"li", cls:"idml-option", listType:"ol"},
-    "2-option":        {tag:"li", cls:"idml-option", listType:"ol"},
-    "4-options":       {tag:"li", cls:"idml-option", listType:"ol"},
-    "c_4-options":     {tag:"li", cls:"idml-option", listType:"ol"},
-    "c_2-sub":         {tag:"li", cls:"idml-option", listType:"ol"},
-    "18-answer with num":{tag:"li",cls:"idml-answer", listType:"ol"},
-    "19-sub answer":   {tag:"li", cls:"idml-sub-answer", listType:"ol"},
-    "i to ii 1":       {tag:"li", cls:"idml-list-alpha", listType:"ol"},
-    "advanced learning":{tag:"aside",cls:"idml-advanced"},
-    "c_advanced learning":{tag:"aside",cls:"idml-advanced"},
-    "c_figuare labeling t":{tag:"figcaption",cls:"idml-caption"},
-    "figure labeling": {tag:"figcaption",cls:"idml-caption"},
-    // Common styles from C_ prefix documents
-    "c_body text":     {tag:"p",  cls:"idml-body"},
-    "body text":       {tag:"p",  cls:"idml-body"},
-    "c_bullets":       {tag:"li", cls:"idml-list-bullet", listType:"ul"},
-    "bullets font":    {tag:"li", cls:"idml-list-bullet", listType:"ul"},
-    "c_sub bullet":    {tag:"li", cls:"idml-list-bullet", listType:"ul"},
-    "c_indent 1":      {tag:"p",  cls:"idml-indent"},
-    "c_indent 2":      {tag:"p",  cls:"idml-indent2"},
-    "c_head 1 blue":   {tag:"h1", cls:"idml-h1"},
-    "c_head 2 orange": {tag:"h2", cls:"idml-h2"},
-    "c_head-3":        {tag:"h3", cls:"idml-h3"},
-    "c_que text":      {tag:"p",  cls:"idml-question"},
-    "c_question":      {tag:"p",  cls:"idml-question"},
-    "c_question indent":{tag:"p", cls:"idml-question-indent"},
-    "c_4-options":     {tag:"li", cls:"idml-option", listType:"ol"},
-    "c_2-sub":         {tag:"li", cls:"idml-option", listType:"ol"},
-    "c_advanced learning":{tag:"aside",cls:"idml-advanced"},
-    "c_2-sub hed":     {tag:"h3", cls:"idml-subheading"},
+    // ── Generic heading patterns ──────────────────
+    "heading 1":            {tag:"h1", cls:"idml-h1"},
+    "heading 2":            {tag:"h2", cls:"idml-h2"},
+    "heading 3":            {tag:"h3", cls:"idml-h3"},
+    "heading 4":            {tag:"h4", cls:"idml-h4"},
+
+    // ── Resource & Development specific ────────────
+    // Headings
+    "heading 1**":          {tag:"h1", cls:"idml-h1"},
+    "7-heading":            {tag:"h2", cls:"idml-h2"},
+    "7-heading new":        {tag:"h2", cls:"idml-h2"},
+    "heading 2":            {tag:"h2", cls:"idml-h2"},
+    "heading 3":            {tag:"h3", cls:"idml-h3"},
+    "box heading":          {tag:"h3", cls:"idml-box-heading"},
+    "questions heading":    {tag:"h3", cls:"idml-section-heading"},
+    "chapter head":         {tag:"h1", cls:"idml-chapter-title"},
+
+    // Body text
+    "1-body text":          {tag:"p",  cls:"idml-body"},
+    "1-body text copy":     {tag:"p",  cls:"idml-body"},
+    "body text":            {tag:"p",  cls:"idml-body"},
+    "paragraph:body text":  {tag:"p",  cls:"idml-body"},
+    "udaan:body text":      {tag:"p",  cls:"idml-body"},
+    "normal":               {tag:"p",  cls:"idml-body"},
+    "no paragraph style":   {tag:"p",  cls:"idml-body"},
+    "basic paragraph":      {tag:"p",  cls:"idml-body"},
+    "normalparagraphstyle": {tag:"p",  cls:"idml-body"},
+    "heading space":        {tag:"p",  cls:"idml-spacer"},
+
+    // Questions
+    "q.1.":                 {tag:"p",  cls:"idml-question"},
+    "q.1.?????":            {tag:"p",  cls:"idml-question"},
+    "question 2":           {tag:"p",  cls:"idml-question"},
+    "question##":           {tag:"p",  cls:"idml-question"},
+    "question**":           {tag:"p",  cls:"idml-question"},
+    "question..........>>": {tag:"p",  cls:"idml-question"},
+
+    // Options / MCQ
+    "option**":             {tag:"li", cls:"idml-option", listType:"ol"},
+    "option 4":             {tag:"li", cls:"idml-option", listType:"ol"},
+    "option":               {tag:"li", cls:"idml-option", listType:"ol"},
+    "1. (a) tab option1":   {tag:"li", cls:"idml-option", listType:"ol"},
+    "option...8888":        {tag:"li", cls:"idml-option", listType:"ol"},
+
+    // Solutions / Answers
+    "solution":             {tag:"p",  cls:"idml-solution"},
+    "sub solution":         {tag:"p",  cls:"idml-solution"},
+    "answer key":           {tag:"div",cls:"idml-answer-key"},
+
+    // Bullets
+    "bullet 1":             {tag:"li", cls:"idml-list-bullet", listType:"ul"},
+    "bullets@":             {tag:"li", cls:"idml-list-bullet", listType:"ul"},
+    "udaan:bullet 1":       {tag:"li", cls:"idml-list-bullet", listType:"ul"},
+
+    // Tables
+    "table head":           {tag:"th", cls:"idml-th"},
+    "table text":           {tag:"td", cls:"idml-td"},
+    "style group 1:table head": {tag:"th", cls:"idml-th"},
+    "style group 1:table text": {tag:"td", cls:"idml-td"},
+
+    // Figure captions — CRITICAL for image placement
+    "fig. caption":         {tag:"figcaption", cls:"idml-caption"},
+    "figure caption":       {tag:"figcaption", cls:"idml-caption"},
+    "caption":              {tag:"figcaption", cls:"idml-caption"},
+    "c_figuare labeling t": {tag:"figcaption", cls:"idml-caption"},
+    "figure labeling":      {tag:"figcaption", cls:"idml-caption"},
+
+    // ── Electric Charges & Fields styles ───────────
+    "chapter title":        {tag:"h1", cls:"idml-chapter-title"},
+    "chapter number":       {tag:"p",  cls:"idml-chapter-number"},
+    "section title":        {tag:"h2", cls:"idml-section-title"},
+    "sub-section":          {tag:"h3", cls:"idml-subsection"},
+    "subheading":           {tag:"h3", cls:"idml-subheading"},
+    "head 1 blue":          {tag:"h1", cls:"idml-h1"},
+    "head 2 orange":        {tag:"h2", cls:"idml-h2"},
+    "head-3":               {tag:"h3", cls:"idml-h3"},
+    "head-2":               {tag:"h2", cls:"idml-h2"},
+    "chapter name":         {tag:"h1", cls:"idml-chapter-title"},
+    "c_head 1":             {tag:"h1", cls:"idml-h1"},
+    "c_head 2":             {tag:"h2", cls:"idml-h2"},
+    "c_head-3":             {tag:"h3", cls:"idml-h3"},
+    "c_2-sub hed":          {tag:"h3", cls:"idml-subheading"},
+    "c_body text":          {tag:"p",  cls:"idml-body"},
+    "c_bullets":            {tag:"li", cls:"idml-list-bullet", listType:"ul"},
+    "bullets font":         {tag:"li", cls:"idml-list-bullet", listType:"ul"},
+    "c_sub bullet":         {tag:"li", cls:"idml-list-bullet", listType:"ul"},
+    "c_indent 1":           {tag:"p",  cls:"idml-indent"},
+    "c_indent 2":           {tag:"p",  cls:"idml-indent2"},
+    "c_head 1 blue":        {tag:"h1", cls:"idml-h1"},
+    "c_head 2 orange":      {tag:"h2", cls:"idml-h2"},
+    "c_que text":           {tag:"p",  cls:"idml-question"},
+    "c_question":           {tag:"p",  cls:"idml-question"},
+    "c_question indent":    {tag:"p",  cls:"idml-question-indent"},
+    "c_4-options":          {tag:"li", cls:"idml-option", listType:"ol"},
+    "que text":             {tag:"p",  cls:"idml-question"},
+    "question":             {tag:"p",  cls:"idml-question"},
+    "c_advanced learning":  {tag:"aside",cls:"idml-advanced"},
+    "advanced learning":    {tag:"aside",cls:"idml-advanced"},
+    "indent 1":             {tag:"p",  cls:"idml-indent"},
+    "indent 2":             {tag:"p",  cls:"idml-indent2"},
+    "sol text":             {tag:"p",  cls:"idml-solution"},
+    "answerkey&solutions":  {tag:"div",cls:"idml-answer-key"},
+    "list bullet":          {tag:"li", cls:"idml-list-bullet", listType:"ul"},
+    "bullet":               {tag:"li", cls:"idml-list-bullet", listType:"ul"},
+    "list number":          {tag:"li", cls:"idml-list-number", listType:"ol"},
+    "numbered":             {tag:"li", cls:"idml-list-number", listType:"ol"},
+    "note":                 {tag:"aside",cls:"idml-note"},
+    "tip":                  {tag:"aside",cls:"idml-tip"},
+    "warning":              {tag:"aside",cls:"idml-warning"},
+    "callout":              {tag:"blockquote",cls:"idml-callout"},
+    "pull quote":           {tag:"blockquote",cls:"idml-pullquote"},
+    "quote":                {tag:"blockquote",cls:"idml-quote"},
+    "code":                 {tag:"pre", cls:"idml-code"},
+    "footer":               {tag:"p",  cls:"idml-footer"},
+    "header":               {tag:"p",  cls:"idml-header"},
   },
   characterStyles: {
     "bold":           {tag:"strong"},
@@ -398,6 +475,12 @@ h1,h2,h3,h4,.idml-h1,.idml-h2,.idml-h3,.idml-h4,.idml-chapter-title,.idml-sectio
 .idml-warning::before{content:'Warning: ';font-weight:700}
 figure{margin:1.5em 0}
 figcaption,.idml-caption{font-size:.875rem;color:#666;font-style:italic;text-align:center;margin-top:.4em}
+/* Vector diagram placeholder */
+.idml-vector-figure{margin:1.5em 0}
+.vector-fig-placeholder{background:#f8f9ff;border:2px dashed #c7d0e8;border-radius:8px;padding:2rem 1.5rem;text-align:center;min-height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.5rem}
+.vfp-icon{font-size:2rem;color:#a0aec0;line-height:1}
+.vfp-label{font-size:.95rem;color:#4a5568;font-family:Georgia,serif}
+.vfp-note{font-size:.7rem;color:#a0aec0;font-style:italic;margin-top:.25rem}
 .idml-code,pre{font-family:'Courier New',Courier,monospace;background:#f1f5f9;border:1px solid var(--color-border);border-radius:4px;padding:1em;overflow-x:auto;font-size:.9rem}
 code{font-family:'Courier New',Courier,monospace;background:#f1f5f9;padding:.1em .35em;border-radius:3px;font-size:.9em}
 a,.idml-link{color:var(--color-accent);text-decoration:underline}
@@ -414,6 +497,11 @@ a,.idml-link{color:var(--color-accent);text-decoration:underline}
 .idml-advanced{background:#faf5ff;border-left:4px solid #9333ea;border-radius:0 6px 6px 0;padding:1em 1.25em;margin:1.5em 0;font-size:.95rem}
 .idml-advanced::before{content:'⭐ Advanced: ';font-weight:700;color:#9333ea}
 ol.idml-list{list-style-type:upper-alpha}
+/* Knowledge Hub / Box Heading callout */
+.idml-box-heading{font-size:1rem;font-weight:700;font-family:var(--font-head);background:#e0f5fb;color:#0a4d68;padding:.45em .85em;border-radius:5px 5px 0 0;margin:1.5em 0 0;display:block;border:1.5px solid #7dd8f0;border-bottom:none}
+.idml-box-heading+ul,.idml-box-heading+ol,.idml-box-heading+p{background:#eefafd;border:1.5px solid #7dd8f0;border-top:none;border-radius:0 5px 5px 5px;padding:.75em 1em;margin-top:0}
+/* Questions / section heading */
+.idml-section-heading{font-size:1.1rem;font-weight:700;font-family:var(--font-head);color:#1a3a6e;border-bottom:2px solid #1a3a6e;padding-bottom:.25em;margin-top:2em;margin-bottom:.75em}
 @media print{body{padding:0;font-size:11pt}}
 `;
 
@@ -422,10 +510,17 @@ ol.idml-list{list-style-type:upper-alpha}
 function normStyle(raw) {
   if (!raw) return 'NormalParagraphStyle';
   let s = raw.replace(/^\$ID\//,'').replace(/^(Paragraph|Character)Style\//,'');
-  // Decode URL-encoding that InDesign uses for group separators (e.g. %3a -> :)
+  // Decode URL-encoding (e.g. %3a → :, %20 → space)
   try { s = decodeURIComponent(s.replace(/\+/g,' ')); } catch(e) {}
-  // Strip group prefix: "Colour Styles:Head 1 Blue" -> "Head 1 Blue"
-  if (s.includes(':')) s = s.split(':').pop();
+  // Strip ALL group prefixes — take only the last segment after ':'
+  // e.g. "Style Group 1:Heading 1**" → "Heading 1**"
+  // e.g. "New Style:Style Group 1:Heading 2" → "Heading 2"
+  // e.g. "Old:1-Body Text" → "1-Body Text"
+  // e.g. "Udaan:Body Text" → "Body Text" (but keep for direct match too)
+  if (s.includes(':')) {
+    const parts = s.split(':');
+    s = parts[parts.length - 1];
+  }
   return s.trim();
 }
 function esc(s) {
@@ -507,6 +602,56 @@ async function parseIDML(buffer) {
     res.images.push({name:f.name.split('/').pop(),file:f});
   });
 
+  // Parse ALL XMLs to extract link ID → filename mapping
+  // AND rectangle Self → link ID mapping (for image placement)
+  const linkIdToFile  = {};   // linkId → filename
+  const rectToLinkId  = {};   // rectangleSelf → linkId
+  
+  for(const f of Object.values(zip.files)){
+    if(f.dir||!f.name.endsWith('.xml')) continue;
+    let xml;
+    try{ xml=await f.async('text'); }catch(e){ continue; }
+    
+    // Find Link elements: <Link Self="id" LinkResourceURI="file:///path/name.ext" .../>
+    const linkRe=/<Link[^>]+Self="([^"]+)"[^>]+LinkResourceURI="([^"]+)"[^>]*\/>/g;
+    let lm;
+    while((lm=linkRe.exec(xml))!==null){
+      const linkId=lm[1];
+      const uri=lm[2];
+      const raw=uri.split('/').pop().split('\\').pop();
+      const fname=decodeURIComponent(raw);
+      if(/\.(png|jpe?g|gif|svg|eps|tiff?|bmp|jpg)$/i.test(fname)){
+        linkIdToFile[linkId]=fname;
+      }
+    }
+    
+    // Find Rectangle elements that contain a Link child
+    // Pattern: <Rectangle Self="rId" ...> ... <Link Self="lId" .../> ... </Rectangle>
+    const rectRe=/<Rectangle[^>]+Self="([^"]+)"[^>]*>([\s\S]*?)<\/Rectangle>/g;
+    let rm;
+    while((rm=rectRe.exec(xml))!==null){
+      const rectId=rm[1];
+      const inner=rm[2];
+      const innerLink=inner.match(/LinkResourceURI="([^"]+)"/);
+      if(innerLink){
+        const raw=innerLink[1].split('/').pop().split('\\').pop();
+        const fname=decodeURIComponent(raw);
+        if(/\.(png|jpe?g|gif|svg|eps|tiff?|bmp|jpg)$/i.test(fname)){
+          rectToLinkId[rectId]=fname;
+        }
+      }
+    }
+  }
+  
+  res.linkIdToFile  = linkIdToFile;
+  res.rectToLinkId  = rectToLinkId;
+  // Make available via res for parseStory calls
+  res._rectToLinkId = rectToLinkId;
+  
+  // Report linked images to UI
+  const linkedFilenames=[...new Set(Object.values(linkIdToFile))];
+  res.linkedImageFiles=linkedFilenames;
+
   // Linked images: InDesign stores images as EXTERNAL links, not embedded.
   // Parse all Spread XMLs to find Rectangle frames with image links.
   // These become <img> placeholders in the HTML + a manifest file.
@@ -572,35 +717,89 @@ function parsePR(pr) {
   const crs=pr.CharacterStyleRange;
   if(!crs) return [];
 
-  // Build a flat list of {styleName, text, props} fragments
   const rawSpans=[];
+  // Also check for Rectangle children directly in ParagraphStyleRange
+  // (some IDML versions place them there instead of inside CharacterStyleRange)
+  const prRects = extractImageRects(pr);
+
   (Array.isArray(crs)?crs:[crs]).forEach(cr=>{
+    // Check if this CharacterStyleRange contains an image Rectangle
+    const imgRects = extractImageRects(cr);
+    if(imgRects.length){
+      imgRects.forEach(fname=>{
+        rawSpans.push({styleName, text:'\uE001'+fname+'\uE002', props:{_isImage:true}});
+      });
+    }
     const s=parseCR(cr); if(s) rawSpans.push(s);
   });
 
-  // Now split the span list on \u0003 paragraph-break markers
-  // Each \u0003 terminates the current paragraph and starts a new one
+  // Also add any image rects found directly in ParagraphStyleRange
+  prRects.forEach(fname=>{
+    rawSpans.push({styleName, text:'\uE001'+fname+'\uE002', props:{_isImage:true}});
+  });
+
   const allBlocks=[];
   let curSpans=[];
 
   const flushBlock=()=>{
     const text=curSpans.map(s=>s.text).join('');
-    if(text.trim()) allBlocks.push({styleName, spans:[...curSpans]});
+    // Flush as image block if it's purely an image marker
+    const imgMatch = text.match(/^\uE001(.+)\uE002$/);
+    if(imgMatch){
+      allBlocks.push({styleName:'_image_', imageFile:imgMatch[1], spans:[]});
+    } else if(text.trim()){
+      allBlocks.push({styleName, spans:[...curSpans]});
+    }
     curSpans=[];
   };
 
   rawSpans.forEach(span=>{
-    // Split this span's text on \u0003
+    if(span.props?._isImage){
+      flushBlock();
+      curSpans.push(span);
+      flushBlock();
+      return;
+    }
     const parts=span.text.split('\u0003');
     parts.forEach((part,i)=>{
       if(part!=='') curSpans.push({...span, text:part});
-      // After each part except the last, flush current block
       if(i < parts.length-1) flushBlock();
     });
   });
-  flushBlock(); // flush final block
+  flushBlock();
 
   return allBlocks;
+}
+
+// Extract image filenames from Rectangle elements inside a node
+function extractImageRects(node){
+  const results=[];
+  if(!node||typeof node!=='object') return results;
+  // Check direct Rectangle children
+  const rects = node.Rectangle ? (Array.isArray(node.Rectangle)?node.Rectangle:[node.Rectangle]) : [];
+  rects.forEach(rect=>{
+    const fname = getRectImageFile(rect);
+    if(fname) results.push(fname);
+  });
+  // Check inside Group children
+  const groups = node.Group ? (Array.isArray(node.Group)?node.Group:[node.Group]) : [];
+  groups.forEach(grp=>{
+    results.push(...extractImageRects(grp));
+  });
+  return results;
+}
+
+function getRectImageFile(rect){
+  if(!rect) return null;
+  const lnk = rect.Link;
+  if(!lnk) return null;
+  const link = Array.isArray(lnk)?lnk[0]:lnk;
+  const uri = link['@_LinkResourceURI']||'';
+  if(!uri) return null;
+  const raw = uri.split('/').pop().split('\\').pop();
+  const fname = decodeURIComponent(raw);
+  if(/\.(png|jpe?g|gif|svg|eps|tiff?|bmp)$/i.test(fname)) return fname;
+  return null;
 }
 
 function parseCR(cr) {
@@ -692,6 +891,34 @@ function getOrderedBlocks(parsed) {
   parsed.stories.forEach(s=>{if(!visited.has(s.id))blocks.push(...s.blocks);});
   return blocks;
 }
+
+// ── Split packed bullet blocks ────────────────────────────────
+// InDesign packs multiple sub-items into one ParagraphStyleRange:
+// [Bold:'Biotic Resources:'][Normal:' The resources...'][Bold:'Abiotic Resources:']...
+// Detect and split into separate blocks so each term gets its own <li>.
+function splitPackedBullets(spans, styleName) {
+  let hasPriorContent = false, splitCount = 0;
+  for (const sp of spans) {
+    const t = (sp.text||'').trim();
+    if (!t) continue;
+    const bold = sp.props?.fontStyle?.toLowerCase().includes('bold');
+    if (bold && hasPriorContent && t[0] === t[0].toUpperCase() && !t.startsWith('(')) splitCount++;
+    hasPriorContent = true;
+  }
+  if (splitCount === 0) return null;
+  const result = []; let cur = []; hasPriorContent = false;
+  for (const sp of spans) {
+    const t = (sp.text||'').trim();
+    const bold = sp.props?.fontStyle?.toLowerCase().includes('bold');
+    const isNew = bold && hasPriorContent && t.length > 0 && t[0] === t[0].toUpperCase() && !t.startsWith('(');
+    if (isNew && cur.length) { result.push({styleName, spans:[...cur]}); cur = []; }
+    cur.push(sp);
+    if (t) hasPriorContent = true;
+  }
+  if (cur.length) result.push({styleName, spans:[...cur]});
+  return result.length > 1 ? result : null;
+}
+
 // Split MCQ options that use tabs as column separators
 // Pattern: "(a)\ttext(b)\ttext(c)\ttext" in ONE block → split into separate <li>
 function splitMCQOptions(inner, tag, cls) {
@@ -720,23 +947,71 @@ function splitMCQOptions(inner, tag, cls) {
 function blocksToHTML(blocks) {
   const nodes=[],lb=[]; let lt=null;
   const flush=()=>{if(!lb.length)return;nodes.push(`<${lt} class="idml-list">\n${lb.join('\n')}\n</${lt}>`);lb.length=0;lt=null;};
+
   for(const b of blocks){
+    // ── Image block (detected from Rectangle inside ParagraphStyleRange) ──
+    if(b.styleName==='_image_'){
+      flush();
+      const imgSrc = findImage(b.imageFile)||'';
+      const imgTag = imgSrc
+        ? `<img src="${imgSrc}" alt="${b.imageFile}" style="max-width:100%;height:auto;display:block;margin:0 auto;border-radius:3px"/>`
+        : `<div class="img-placeholder" style="min-height:100px;background:#f0f0f0;border:1px dashed #bbb;border-radius:4px;display:flex;align-items:center;justify-content:center;color:#999;font-size:.75rem;padding:8px;text-align:center">📷 ${b.imageFile}</div>`;
+      nodes.push(`<figure>\n  ${imgTag}\n</figure>`);
+      continue;
+    }
+
     const m=mapPS(b.styleName);
     const inner=spansToHTML(b.spans);
+
+    // ── Detect "Figure:" prefix in body text → it's a figure caption for a vector diagram ──
+    // These are InDesign-drawn flowcharts/diagrams that have no image file.
+    // Treat them as figcaptions with a PDF-extract placeholder.
+    const plainText = inner.replace(/<[^>]+>/g,'').trim();
+    if((m.tag==='p'||m.tag==='figcaption') && /^Figure\s*[:\u2013\-]/i.test(plainText)){
+      flush();
+      const captionText = plainText.replace(/^Figure\s*[:\u2013\-]\s*/i,'').trim();
+      const captionSlug = captionText.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+      nodes.push(`<figure class="idml-vector-figure" data-caption="${esc(captionText)}" data-slug="${captionSlug}">
+  <div class="vector-fig-placeholder">
+    <div class="vfp-icon">◈</div>
+    <div class="vfp-label">Diagram: <strong>${captionText}</strong></div>
+    <div class="vfp-note">Vector diagram from PDF — use PDF Figure Extractor tool to add this image</div>
+  </div>
+  <figcaption class="idml-caption">Figure: ${captionText}</figcaption>
+</figure>`);
+      continue;
+    }
+
     if(!inner.trim()){flush();nodes.push('<p class="idml-spacer">&nbsp;</p>');continue;}
     if(m.listType){
       if(lt&&lt!==m.listType)flush();
       lt=m.listType;
-      // Try to split MCQ options that are merged with tabs
-      const split=splitMCQOptions(inner,m.tag,m.cls);
-      if(split) { lb.push(split); }
-      else lb.push(`  <${m.tag} class="${m.cls}">${inner}</${m.tag}>`);
+      // Try to split packed bullet sub-items (e.g. Biotic/Abiotic in one PSR)
+      const packedSplit = splitPackedBullets(b.spans, b.styleName);
+      if(packedSplit) {
+        packedSplit.forEach(pb => {
+          const pInner = spansToHTML(pb.spans);
+          lb.push(`  <${m.tag} class="${m.cls}">${pInner}</${m.tag}>`);
+        });
+      } else {
+        const split=splitMCQOptions(inner,m.tag,m.cls);
+        if(split) { lb.push(split); }
+        else lb.push(`  <${m.tag} class="${m.cls}">${inner}</${m.tag}>`);
+      }
     } else {
       flush();
       const cls=m.cls?` class="${m.cls}"`:'' ;
       if(m.tag==='figcaption') {
-        // Insert image placeholder before caption
-        nodes.push(`<figure>\n  <img src="images/[see-MISSING-IMAGES.txt]" alt="${inner.replace(/<[^>]+>/g,'').trim()}" style="max-width:100%;display:block;margin:0 auto;min-height:80px;background:#f0f0f0;border:1px dashed #aaa" onerror="this.style.display='none'"/>\n  <figcaption${cls}>${inner}</figcaption>\n</figure>`);
+        // Figcaption that follows an image block — wrap together
+        const lastFig = nodes.length>0 && nodes[nodes.length-1].startsWith('<figure>');
+        if(lastFig){
+          // Append caption to the existing figure
+          const fig = nodes.pop();
+          nodes.push(fig.replace('</figure>', `  <figcaption${cls}>${inner}</figcaption>\n</figure>`));
+        } else {
+          // Standalone figcaption — look for nearest unmatched image in queue
+          nodes.push(`<figure>\n  <figcaption${cls}>${inner}</figcaption>\n</figure>`);
+        }
       }
       else nodes.push(`<${m.tag}${cls}>${inner}</${m.tag}>`);
     }
@@ -747,9 +1022,7 @@ function blocksToHTML(blocks) {
 function buildMeta(parsed,blocks) {
   const freq={};
   blocks.forEach(b=>{freq[b.styleName]=(freq[b.styleName]||0)+1;});
-  // Collect all unique linked image filenames
-  const linkedImages = Object.values(parsed.linkMap||{}).filter(Boolean);
-  const uniqueLinked = [...new Set(linkedImages)];
+  const uniqueLinked = parsed.linkedImageFiles || [...new Set(Object.values(parsed.linkIdToFile||parsed.linkMap||{}))];
   return {
     generatedAt:new Date().toISOString(),
     storiesFound:parsed.stories.length,
@@ -768,38 +1041,54 @@ async function buildZip(parsed,title) {
   const nodes=blocksToHTML(blocks);
   const meta=buildMeta(parsed,blocks);
 
-  // Build image manifest
   const linkedFiles = meta.linkedImageFiles || [];
-  const manifestLines = [
-    '# MISSING IMAGES MANIFEST',
-    '# InDesign stores images as external links - they are NOT embedded in the IDML file.',
-    '# Copy the files listed below into the images/ folder next to index.html.',
-    '# Then the <img> tags in index.html will display correctly.',
-    '',
-    `# Total linked images: ${linkedFiles.length}`,
-    '',
-    ...linkedFiles.map(f => f),
-    '',
-    '# After adding images, open index.html in a browser.',
-    '# Image filenames must match exactly (case-sensitive on Linux/Mac).',
-  ].join('\n');
 
-  // Update HTML to use images/filename.ext paths for linked images
-  // (img placeholders already in nodes from blocksToHTML - they use images/ prefix)
-  const html=`<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8"/>\n<meta name="viewport" content="width=device-width,initial-scale=1.0"/>\n<title>${esc(title)}</title>\n<link rel="stylesheet" href="styles.css"/>\n</head>\n<body>\n<main class="idml-page">\n\n${nodes.join('\n')}\n\n</main>\n</body>\n</html>`;
+  // Split into matched (embedded) vs unmatched (still needed)
+  const matched   = linkedFiles.filter(f => findImage(f));
+  const unmatched = linkedFiles.filter(f => !findImage(f));
+
+  // Only write manifest for files that couldn't be embedded
+  let manifestLines = '';
+  if(unmatched.length > 0){
+    manifestLines = [
+      '# MISSING IMAGES — copy these files into the images/ folder',
+      `# ${unmatched.length} of ${linkedFiles.length} image(s) still needed:`,
+      '',
+      ...unmatched,
+      '',
+      '# Already embedded as base64 in index.html:',
+      ...matched.map(f=>'# ✓ '+f),
+    ].join('\n');
+  }
+
+  // Images are embedded as base64 in the HTML via blocksToHTML/findImage()
+  let htmlBody=nodes.join('\n');
+
+  const html=`<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8"/>\n<meta name="viewport" content="width=device-width,initial-scale=1.0"/>\n<title>${esc(title)}</title>\n<link rel="stylesheet" href="styles.css"/>\n</head>\n<body>\n<main class="idml-page">\n\n${htmlBody}\n\n</main>\n</body>\n</html>`;
 
   const zip=new JSZip();
   zip.file('index.html',html);
   zip.file('styles.css',OUTPUT_CSS);
   zip.file('metadata.json',JSON.stringify(meta,null,2));
   zip.file('style-map.json',JSON.stringify({_note:"Edit paragraphStyles/characterStyles to improve mapping.",paragraphStyles:STYLE_MAP.paragraphStyles,characterStyles:STYLE_MAP.characterStyles,fallback:STYLE_MAP.fallback},null,2));
-  if (linkedFiles.length > 0) {
+
+  // Write manifest only if some images are still missing
+  if(unmatched.length > 0){
     zip.file('MISSING-IMAGES.txt', manifestLines);
   }
+
   const imgF=zip.folder('images');
-  // Copy any embedded images
+  // Copy any embedded images from the IDML package itself
   for(const img of parsed.images){try{imgF.file(img.name,await img.file.async('uint8array'));}catch(e){}}
-  return {zip,meta};
+  // Also copy uploaded image files into images/ folder (for external reference if needed)
+  for(const [fname, dataURL] of Object.entries(imageFiles)){
+    try{
+      const b64 = dataURL.split(',')[1];
+      if(b64) imgF.file(fname, b64, {base64:true});
+    }catch(e){}
+  }
+
+  return {zip,meta,matched,unmatched};
 }
 
 // ── UI ───────────────────────────────────────────────────────
@@ -843,7 +1132,49 @@ function setFile(f){
   $('fc-size').textContent=(f.size/1024).toFixed(0)+' KB';
   $('file-card').classList.add('visible');
   $('btn-convert').classList.add('visible');
+  $('img-panel').style.display='';
   setStep(0);
+}
+
+// ── Image file drop zone ───────────────────────────────────────
+const imgDz=$('img-dropzone');
+imgDz.addEventListener('dragover',e=>{e.preventDefault();imgDz.style.background='#eef1f8';});
+imgDz.addEventListener('dragleave',()=>imgDz.style.background='');
+imgDz.addEventListener('drop',e=>{e.preventDefault();imgDz.style.background='';handleImageFiles([...e.dataTransfer.files]);});
+imgDz.addEventListener('click',()=>$('img-input').click());
+$('img-input').addEventListener('change',e=>{handleImageFiles([...e.target.files]);e.target.value='';});
+
+async function handleImageFiles(files){
+  for(const f of files){
+    const dataURL=await new Promise(res=>{const r=new FileReader();r.onload=e=>res(e.target.result);r.readAsDataURL(f);});
+    imageFiles[f.name]=dataURL;
+  }
+  renderImageFileList();
+}
+
+function renderImageFileList(){
+  const n=Object.keys(imageFiles).length;
+  $('img-count').textContent=n>0?n+' image(s) loaded':'';
+  $('img-file-list').innerHTML=Object.keys(imageFiles).map(name=>`
+    <span style="font-size:.63rem;font-family:var(--fm);background:var(--surface);border:1px solid var(--rule);padding:2px 7px;border-radius:3px;display:inline-flex;align-items:center;gap:4px">
+      &#128247; ${esc(name)}
+      <button onclick="delete imageFiles[${JSON.stringify(name)}];renderImageFileList()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:.8rem;padding:0 2px">&times;</button>
+    </span>`).join('');
+}
+
+function updateMissingImages(linkedFiles){
+  const el=$('img-missing-list');
+  if(!el) return;
+  if(!linkedFiles||!linkedFiles.length){ el.textContent=''; return; }
+  const missing=linkedFiles.filter(f=>!findImage(f));
+  const matched=linkedFiles.length-missing.length;
+  if(missing.length===0){
+    el.innerHTML=`<span style="color:var(--green)">✓ All ${matched} linked image(s) matched — will be embedded in output.</span>`;
+  } else {
+    el.innerHTML=`<strong style="color:var(--accent2)">⚠ ${missing.length} image(s) not yet loaded:</strong> `+
+      missing.map(f=>`<code style="background:#fef3c7;padding:1px 5px;border-radius:2px;font-size:.8em">${esc(f)}</code>`).join(' ')+
+      (matched>0?` &nbsp;<span style="color:var(--green)">(${matched} matched ✓)</span>`:'');
+  }
 }
 const dz=$('dropzone');
 dz.addEventListener('click',()=>$('file-input').click());
@@ -866,10 +1197,16 @@ $('btn-convert').addEventListener('click',async()=>{
     const buffer=await selFile.arrayBuffer();
     setProgress(25,'Unzipping IDML package…','Parsing XML structure'); await tick();
     const parsed=await parseIDML(buffer);
+    // Store for use in blocksToHTML
+    window._parsedIDML = parsed;
+    // Update missing images UI
+    if(parsed.linkedImageFiles?.length){
+      updateMissingImages(parsed.linkedImageFiles);
+    }
     setStep(2); setProgress(55,'Resolving style inheritance…',`${parsed.stories.length} stories · ${Object.keys(parsed.paragraphStyles).length} paragraph styles`); await tick();
     setProgress(72,'Converting blocks to HTML…','Mapping paragraph and character styles'); await tick();
     const title=selFile.name.replace(/\.idml$/i,'');
-    const {zip,meta}=await buildZip(parsed,title);
+    const {zip,meta,matched,unmatched}=await buildZip(parsed,title);
     setProgress(88,'Packaging output ZIP…','Bundling HTML · CSS · images · metadata'); await tick();
     outBlob=await zip.generateAsync({type:'blob',compression:'DEFLATE',compressionOptions:{level:6}});
     outName=title+'_converted.zip';
@@ -879,12 +1216,21 @@ $('btn-convert').addEventListener('click',async()=>{
     $('progress-panel').classList.remove('visible');
     $('result-panel').classList.add('visible');
     $('result-sub').textContent=`${title} — index.html · styles.css · images/ · metadata.json`;
-    if(meta.imagesLinked>0){
-      const warn=document.createElement('div');
-      warn.style.cssText='margin-top:.6rem;padding:.6rem .85rem;background:#fff8ec;border:1px solid #fbbf24;border-radius:5px;font-size:.75rem;color:#92400e;font-family:sans-serif;line-height:1.5';
-      warn.innerHTML=`<strong>⚠ ${meta.imagesLinked} linked image(s) not embedded</strong><br>InDesign stores images as external files. Check <code style="background:#fef3c7;padding:1px 4px;border-radius:2px">MISSING-IMAGES.txt</code> in the ZIP — it lists every filename you need to copy into the <code style="background:#fef3c7;padding:1px 4px;border-radius:2px">images/</code> folder.`;
-      document.getElementById('result-panel').appendChild(warn);
+
+    // Show image embedding status
+    const imgStatusEl=document.createElement('div');
+    imgStatusEl.style.cssText='margin-top:.6rem;padding:.6rem .85rem;border-radius:5px;font-size:.75rem;font-family:sans-serif;line-height:1.6';
+    if(matched.length>0 && unmatched.length===0){
+      imgStatusEl.style.cssText+='background:#edfbf3;border:1px solid #86efac;color:#14532d';
+      imgStatusEl.innerHTML=`✓ <strong>${matched.length} image(s) embedded</strong> as base64 — index.html is fully self-contained.`;
+    } else if(matched.length>0 && unmatched.length>0){
+      imgStatusEl.style.cssText+='background:#fff8ec;border:1px solid #fbbf24;color:#92400e';
+      imgStatusEl.innerHTML=`✓ <strong>${matched.length} image(s) embedded.</strong> ⚠ <strong>${unmatched.length} still missing</strong> — see <code style="background:#fef3c7;padding:1px 4px;border-radius:2px">MISSING-IMAGES.txt</code> in ZIP: ${unmatched.map(f=>`<code style="background:#fef3c7;padding:1px 4px;border-radius:2px">${f}</code>`).join(' ')}`;
+    } else if(unmatched.length>0){
+      imgStatusEl.style.cssText+='background:#fff0ee;border:1px solid #fca5a5;color:#991b0f';
+      imgStatusEl.innerHTML=`⚠ <strong>${unmatched.length} linked image(s) not embedded</strong> — add them in Step 2 and reconvert: ${unmatched.map(f=>`<code style="background:#fef3c7;padding:1px 4px;border-radius:2px">${f}</code>`).join(' ')}`;
     }
+    if(meta.imagesLinked>0) document.getElementById('result-panel').appendChild(imgStatusEl);
     showMeta(meta);
     setTimeout(()=>$('btn-download').classList.add('glow'),200);
   } catch(err) {
