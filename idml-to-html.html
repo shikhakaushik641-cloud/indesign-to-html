@@ -335,6 +335,24 @@ const STYLE_MAP = {
     "c_advanced learning":{tag:"aside",cls:"idml-advanced"},
     "c_figuare labeling t":{tag:"figcaption",cls:"idml-caption"},
     "figure labeling": {tag:"figcaption",cls:"idml-caption"},
+    // Common styles from C_ prefix documents
+    "c_body text":     {tag:"p",  cls:"idml-body"},
+    "body text":       {tag:"p",  cls:"idml-body"},
+    "c_bullets":       {tag:"li", cls:"idml-list-bullet", listType:"ul"},
+    "bullets font":    {tag:"li", cls:"idml-list-bullet", listType:"ul"},
+    "c_sub bullet":    {tag:"li", cls:"idml-list-bullet", listType:"ul"},
+    "c_indent 1":      {tag:"p",  cls:"idml-indent"},
+    "c_indent 2":      {tag:"p",  cls:"idml-indent2"},
+    "c_head 1 blue":   {tag:"h1", cls:"idml-h1"},
+    "c_head 2 orange": {tag:"h2", cls:"idml-h2"},
+    "c_head-3":        {tag:"h3", cls:"idml-h3"},
+    "c_que text":      {tag:"p",  cls:"idml-question"},
+    "c_question":      {tag:"p",  cls:"idml-question"},
+    "c_question indent":{tag:"p", cls:"idml-question-indent"},
+    "c_4-options":     {tag:"li", cls:"idml-option", listType:"ol"},
+    "c_2-sub":         {tag:"li", cls:"idml-option", listType:"ol"},
+    "c_advanced learning":{tag:"aside",cls:"idml-advanced"},
+    "c_2-sub hed":     {tag:"h3", cls:"idml-subheading"},
   },
   characterStyles: {
     "bold":           {tag:"strong"},
@@ -484,12 +502,56 @@ async function parseIDML(buffer) {
     });
   }
 
-  // Images
+  // Embedded images (rare - only if packaged with IDML)
   zip.file(/\.(png|jpe?g|gif|svg|eps|tiff?)$/i).forEach(f=>{
     res.images.push({name:f.name.split('/').pop(),file:f});
   });
 
+  // Linked images: InDesign stores images as EXTERNAL links, not embedded.
+  // Parse all Spread XMLs to find Rectangle frames with image links.
+  // These become <img> placeholders in the HTML + a manifest file.
+  const linkMap = {}; // linkId -> filename
+  for (const f of zip.file(/^(Spreads|Resources)\/.*\.xml$/)) {
+    let doc; try{doc=xp.parse(await f.async('text'));}catch(e){continue;}
+    collectLinks(doc, linkMap);
+  }
+  // Also check Document.xml
+  for (const f of zip.file(/^[^/]+\.xml$/)) {
+    let doc; try{doc=xp.parse(await f.async('text'));}catch(e){continue;}
+    collectLinks(doc, linkMap);
+  }
+  res.linkMap = linkMap;
+
+  // Collect image frames from spreads (Rectangle with image link)
+  res.imageFrames = [];
+  res.spreads.forEach(sp => {
+    sp.imageFrames && res.imageFrames.push(...sp.imageFrames);
+  });
+
   return res;
+}
+
+function collectLinks(node, linkMap) {
+  if (!node || typeof node !== 'object') return;
+  // Link elements: <Link Self="..." LinkResourceURI="file:///path/to/image.png"/>
+  const links = node['Link'];
+  if (links) {
+    (Array.isArray(links)?links:[links]).forEach(lk => {
+      const id = lk['@_Self'];
+      const uri = lk['@_LinkResourceURI'] || '';
+      if (id && uri) {
+        // Extract just the filename from the URI
+        const fname = decodeURIComponent(uri.split('/').pop().split('\\').pop());
+        linkMap[id] = fname;
+      }
+    });
+  }
+  Object.values(node).forEach(v => {
+    if (v && typeof v === 'object' && !Array.isArray(v)) collectLinks(v, linkMap);
+    else if (Array.isArray(v)) v.forEach(item => {
+      if (item && typeof item === 'object') collectLinks(item, linkMap);
+    });
+  });
 }
 
 function parseStory(story) {
@@ -497,18 +559,48 @@ function parseStory(story) {
   const prs=story.ParagraphStyleRange;
   if(!prs) return {id:story['@_Self']||'',blocks};
   (Array.isArray(prs)?prs:[prs]).forEach(pr=>{
-    const b=parsePR(pr); if(b) blocks.push(b);
+    // Each ParagraphStyleRange can contain multiple InDesign paragraphs
+    // separated by \u0003 (end-of-paragraph). Split them into separate blocks.
+    const subBlocks = parsePR(pr);
+    blocks.push(...subBlocks);
   });
   return {id:story['@_Self']||'',blocks};
 }
 
 function parsePR(pr) {
   const styleName=normStyle(pr['@_AppliedParagraphStyle']||'');
-  const spans=[];
   const crs=pr.CharacterStyleRange;
-  if(crs)(Array.isArray(crs)?crs:[crs]).forEach(cr=>{const s=parseCR(cr);if(s)spans.push(s);});
-  if(!spans.map(s=>s.text).join('').trim()) return null;
-  return {styleName,spans};
+  if(!crs) return [];
+
+  // Build a flat list of {styleName, text, props} fragments
+  const rawSpans=[];
+  (Array.isArray(crs)?crs:[crs]).forEach(cr=>{
+    const s=parseCR(cr); if(s) rawSpans.push(s);
+  });
+
+  // Now split the span list on \u0003 paragraph-break markers
+  // Each \u0003 terminates the current paragraph and starts a new one
+  const allBlocks=[];
+  let curSpans=[];
+
+  const flushBlock=()=>{
+    const text=curSpans.map(s=>s.text).join('');
+    if(text.trim()) allBlocks.push({styleName, spans:[...curSpans]});
+    curSpans=[];
+  };
+
+  rawSpans.forEach(span=>{
+    // Split this span's text on \u0003
+    const parts=span.text.split('\u0003');
+    parts.forEach((part,i)=>{
+      if(part!=='') curSpans.push({...span, text:part});
+      // After each part except the last, flush current block
+      if(i < parts.length-1) flushBlock();
+    });
+  });
+  flushBlock(); // flush final block
+
+  return allBlocks;
 }
 
 function parseCR(cr) {
@@ -520,7 +612,8 @@ function parseCR(cr) {
   else if(typeof c==='number') text=String(c);
   else if(Array.isArray(c)) text=c.map(x=>typeof x==='string'?x:typeof x==='number'?String(x):(x?.['#text']||'')).join('');
   else if(typeof c==='object') text=c['#text']||'';
-  text=text.replace(/\u0003/g,'\n').replace(/\u0009/g,'\t').replace(/\uFFFD/g,'').replace(/\u000B/g,'\n');
+  // Keep \u0003 (end-of-paragraph) as a splittable marker; convert others
+  text=text.replace(/\u0009/g,'\t').replace(/\uFFFD/g,'').replace(/\u000B/g,'\n');
   const p={};
   if(cr['@_FontStyle']) p.fontStyle=cr['@_FontStyle'];
   if(cr['@_Underline']===true||cr['@_Underline']==='true') p.underline=true;
@@ -532,11 +625,19 @@ function parseCR(cr) {
 
 function collectFrames(node,frames) {
   if(!node||typeof node!=='object') return;
-  ['TextFrame','Group'].forEach(type=>{
+  ['TextFrame','Rectangle','Oval','Polygon','Group'].forEach(type=>{
     const items=node[type]; if(!items) return;
     (Array.isArray(items)?items:[items]).forEach(item=>{
       if(type==='TextFrame'&&item['@_Self'])
         frames.push({id:item['@_Self'],storyRef:item['@_ParentStory'],next:item['@_NextTextFrame'],prev:item['@_PreviousTextFrame']});
+      if((type==='Rectangle'||type==='Oval'||type==='Polygon')&&item['@_Self']) {
+        // Image frame: has a Link child
+        const lnk = item['Link'];
+        const linkId = lnk ? (Array.isArray(lnk)?lnk[0]:lnk)['@_Self'] : null;
+        const linkUri = lnk ? ((Array.isArray(lnk)?lnk[0]:lnk)['@_LinkResourceURI']||'') : '';
+        const fname = linkUri ? decodeURIComponent(linkUri.split('/').pop().split('\\').pop()) : null;
+        frames.push({id:item['@_Self'],type:'image',linkId,filename:fname,bounds:item['@_GeometricBounds']});
+      }
       if(type==='Group') collectFrames(item,frames);
     });
   });
@@ -591,6 +692,31 @@ function getOrderedBlocks(parsed) {
   parsed.stories.forEach(s=>{if(!visited.has(s.id))blocks.push(...s.blocks);});
   return blocks;
 }
+// Split MCQ options that use tabs as column separators
+// Pattern: "(a)\ttext(b)\ttext(c)\ttext" in ONE block → split into separate <li>
+function splitMCQOptions(inner, tag, cls) {
+  // Detect: starts with (a) or (A) or (i) followed by tab, has (b)/(B)/(ii)
+  // Use a regex that detects option labels: (a), (b), (A), (B), (i), (ii) etc.
+  const stripped = inner.replace(/<[^>]+>/g,''); // strip tags to test pattern
+  const optPattern = /^\s*\([a-dA-D]\)\s*\t|^\s*\([ivxIVX]+\)\s*\t/;
+  if (!optPattern.test(stripped)) return null;
+
+  // Split on \t followed by text that starts a new option marker, or on the option markers themselves
+  // Strategy: find all (a)\t (b)\t etc. and split there
+  // We work on the raw inner HTML preserving tags
+  // Split by \t pattern between option markers
+  const parts = inner.split(/(?=\([a-dA-D]\))/);
+  if (parts.length < 2) return null;
+
+  const items = parts.map(p => p.trim()).filter(Boolean).map(p => {
+    // Clean leading/trailing tabs
+    return p.replace(/^\t+|\t+$/g,'').trim();
+  }).filter(Boolean);
+
+  if (items.length < 2) return null;
+  return items.map(item => `  <${tag} class="${cls}">${item}</${tag}>`).join('\n');
+}
+
 function blocksToHTML(blocks) {
   const nodes=[],lb=[]; let lt=null;
   const flush=()=>{if(!lb.length)return;nodes.push(`<${lt} class="idml-list">\n${lb.join('\n')}\n</${lt}>`);lb.length=0;lt=null;};
@@ -601,11 +727,17 @@ function blocksToHTML(blocks) {
     if(m.listType){
       if(lt&&lt!==m.listType)flush();
       lt=m.listType;
-      lb.push(`  <${m.tag} class="${m.cls}">${inner}</${m.tag}>`);
+      // Try to split MCQ options that are merged with tabs
+      const split=splitMCQOptions(inner,m.tag,m.cls);
+      if(split) { lb.push(split); }
+      else lb.push(`  <${m.tag} class="${m.cls}">${inner}</${m.tag}>`);
     } else {
       flush();
       const cls=m.cls?` class="${m.cls}"`:'' ;
-      if(m.tag==='figcaption') nodes.push(`<figure>\n  <figcaption${cls}>${inner}</figcaption>\n</figure>`);
+      if(m.tag==='figcaption') {
+        // Insert image placeholder before caption
+        nodes.push(`<figure>\n  <img src="images/[see-MISSING-IMAGES.txt]" alt="${inner.replace(/<[^>]+>/g,'').trim()}" style="max-width:100%;display:block;margin:0 auto;min-height:80px;background:#f0f0f0;border:1px dashed #aaa" onerror="this.style.display='none'"/>\n  <figcaption${cls}>${inner}</figcaption>\n</figure>`);
+      }
       else nodes.push(`<${m.tag}${cls}>${inner}</${m.tag}>`);
     }
   }
@@ -615,12 +747,17 @@ function blocksToHTML(blocks) {
 function buildMeta(parsed,blocks) {
   const freq={};
   blocks.forEach(b=>{freq[b.styleName]=(freq[b.styleName]||0)+1;});
+  // Collect all unique linked image filenames
+  const linkedImages = Object.values(parsed.linkMap||{}).filter(Boolean);
+  const uniqueLinked = [...new Set(linkedImages)];
   return {
     generatedAt:new Date().toISOString(),
     storiesFound:parsed.stories.length,
     spreadsFound:parsed.spreads.length,
     totalBlocks:blocks.length,
-    imagesReferenced:parsed.images.length,
+    imagesEmbedded:parsed.images.length,
+    imagesLinked:uniqueLinked.length,
+    linkedImageFiles:uniqueLinked,
     paragraphStylesInDocument:Object.keys(parsed.paragraphStyles).length,
     styleUsageFrequency:freq,
     unmappedStyles:Object.keys(freq).filter(n=>mapPS(n)._unmapped),
@@ -630,13 +767,37 @@ async function buildZip(parsed,title) {
   const blocks=getOrderedBlocks(parsed);
   const nodes=blocksToHTML(blocks);
   const meta=buildMeta(parsed,blocks);
+
+  // Build image manifest
+  const linkedFiles = meta.linkedImageFiles || [];
+  const manifestLines = [
+    '# MISSING IMAGES MANIFEST',
+    '# InDesign stores images as external links - they are NOT embedded in the IDML file.',
+    '# Copy the files listed below into the images/ folder next to index.html.',
+    '# Then the <img> tags in index.html will display correctly.',
+    '',
+    `# Total linked images: ${linkedFiles.length}`,
+    '',
+    ...linkedFiles.map(f => f),
+    '',
+    '# After adding images, open index.html in a browser.',
+    '# Image filenames must match exactly (case-sensitive on Linux/Mac).',
+  ].join('\n');
+
+  // Update HTML to use images/filename.ext paths for linked images
+  // (img placeholders already in nodes from blocksToHTML - they use images/ prefix)
   const html=`<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8"/>\n<meta name="viewport" content="width=device-width,initial-scale=1.0"/>\n<title>${esc(title)}</title>\n<link rel="stylesheet" href="styles.css"/>\n</head>\n<body>\n<main class="idml-page">\n\n${nodes.join('\n')}\n\n</main>\n</body>\n</html>`;
+
   const zip=new JSZip();
   zip.file('index.html',html);
   zip.file('styles.css',OUTPUT_CSS);
   zip.file('metadata.json',JSON.stringify(meta,null,2));
   zip.file('style-map.json',JSON.stringify({_note:"Edit paragraphStyles/characterStyles to improve mapping.",paragraphStyles:STYLE_MAP.paragraphStyles,characterStyles:STYLE_MAP.characterStyles,fallback:STYLE_MAP.fallback},null,2));
+  if (linkedFiles.length > 0) {
+    zip.file('MISSING-IMAGES.txt', manifestLines);
+  }
   const imgF=zip.folder('images');
+  // Copy any embedded images
   for(const img of parsed.images){try{imgF.file(img.name,await img.file.async('uint8array'));}catch(e){}}
   return {zip,meta};
 }
@@ -718,6 +879,12 @@ $('btn-convert').addEventListener('click',async()=>{
     $('progress-panel').classList.remove('visible');
     $('result-panel').classList.add('visible');
     $('result-sub').textContent=`${title} — index.html · styles.css · images/ · metadata.json`;
+    if(meta.imagesLinked>0){
+      const warn=document.createElement('div');
+      warn.style.cssText='margin-top:.6rem;padding:.6rem .85rem;background:#fff8ec;border:1px solid #fbbf24;border-radius:5px;font-size:.75rem;color:#92400e;font-family:sans-serif;line-height:1.5';
+      warn.innerHTML=`<strong>⚠ ${meta.imagesLinked} linked image(s) not embedded</strong><br>InDesign stores images as external files. Check <code style="background:#fef3c7;padding:1px 4px;border-radius:2px">MISSING-IMAGES.txt</code> in the ZIP — it lists every filename you need to copy into the <code style="background:#fef3c7;padding:1px 4px;border-radius:2px">images/</code> folder.`;
+      document.getElementById('result-panel').appendChild(warn);
+    }
     showMeta(meta);
     setTimeout(()=>$('btn-download').classList.add('glow'),200);
   } catch(err) {
@@ -732,7 +899,7 @@ $('btn-convert').addEventListener('click',async()=>{
 });
 
 function showMeta(meta){
-  const rows=[['Stories found',meta.storiesFound],['Spreads found',meta.spreadsFound],['Total paragraphs',meta.totalBlocks],['Images referenced',meta.imagesReferenced],['Paragraph styles',meta.paragraphStylesInDocument],['Unmapped styles',meta.unmappedStyles.length]];
+  const rows=[['Stories found',meta.storiesFound],['Spreads found',meta.spreadsFound],['Total paragraphs',meta.totalBlocks],['Images embedded',meta.imagesEmbedded||0],['Images linked (external)',meta.imagesLinked||0],['Paragraph styles',meta.paragraphStylesInDocument],['Unmapped styles',meta.unmappedStyles.length]];
   $('meta-table').innerHTML=rows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('');
   if(meta.unmappedStyles.length){
     $('unmapped-chips').innerHTML=meta.unmappedStyles.map(s=>`<span class="unmapped-chip">${esc(s)}</span>`).join('');
