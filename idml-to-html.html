@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>IDML → HTML Converter</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Sans:wght@300;400;500;600;700&display=swap');
+:root{--ink:#0d0d0d;--paper:#f7f5f0;--accent:#b5451b;--accent2:#d4622a;--rule:#ccc8bf;--muted:#7a746c;--surface:#efece5;--raised:#fdfcf9;--green:#1a7a3c;--green-bg:#edfbf3;--warn-bg:#fff8ec;--warn:#b07200;--err-bg:#fff0ee;--err:#991b0f;--fh:'Playfair Display','Georgia',serif;--fb:'Georgia','Times New Roman',serif;--fu:'DM Sans','Helvetica Neue',sans-serif;--fm:'Fira Code','Courier New',monospace}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{font-size:16px;scroll-behavior:smooth}
+body{background:var(--paper);color:var(--ink);font-family:var(--fu);min-height:100vh;display:flex;flex-direction:column}
+header{border-bottom:3px double var(--ink);padding:1.5rem 2.5rem 1.25rem;display:flex;align-items:flex-end;gap:2rem;background:var(--raised)}
+.hk{font-size:.6rem;font-weight:700;letter-spacing:.3em;text-transform:uppercase;color:var(--accent);margin-bottom:.3rem}
+.ht{font-family:var(--fh);font-size:2rem;font-weight:900;line-height:1;color:var(--ink)}
+.ht span{color:var(--accent)}
+.hm{margin-left:auto;font-size:.68rem;color:var(--muted);line-height:1.8;text-align:right}
+main{flex:1;max-width:700px;width:100%;margin:0 auto;padding:3rem 1.5rem 4rem}
+.steps{display:flex;align-items:center;margin-bottom:2.5rem}
+.step{display:flex;flex-direction:column;align-items:center;gap:5px}
+.step-dot{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700;transition:all .35s;background:var(--rule);color:#fff}
+.step.active .step-dot{background:var(--accent);transform:scale(1.15)}
+.step.done .step-dot{background:var(--green)}
+.step-label{font-size:.58rem;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);white-space:nowrap;transition:color .3s}
+.step.active .step-label{color:var(--accent)}
+.step.done .step-label{color:var(--green)}
+.step-line{flex:1;height:2px;margin:0 6px;margin-bottom:18px;background:var(--rule);transition:background .4s}
+.step-line.done{background:var(--green)}
+#dropzone{border:2px dashed var(--rule);border-radius:10px;padding:3.5rem 2rem;text-align:center;cursor:pointer;background:var(--surface);transition:all .2s;margin-bottom:1.25rem}
+#dropzone:hover,#dropzone.drag-over{border-color:var(--accent);background:#fcf0ec}
+.dz-icon{color:var(--muted);margin-bottom:1rem;transition:color .2s}
+#dropzone:hover .dz-icon,#dropzone.drag-over .dz-icon{color:var(--accent)}
+.dz-main{font-family:var(--fb);font-size:1.1rem;color:var(--ink);margin-bottom:.35rem}
+.dz-sub{font-size:.78rem;color:var(--muted)}
+#file-card{display:none;align-items:center;gap:.75rem;padding:.8rem 1rem;border:1px solid var(--rule);border-radius:7px;background:var(--raised);margin-bottom:1.25rem}
+#file-card.visible{display:flex}
+.fc-icon{color:var(--accent);flex-shrink:0}
+.fc-name{font-size:.88rem;font-weight:600;color:var(--ink)}
+.fc-size{font-size:.7rem;color:var(--muted);margin-top:1px}
+#file-remove{margin-left:auto;background:none;border:none;cursor:pointer;color:var(--muted);padding:4px;border-radius:4px;transition:color .15s}
+#file-remove:hover{color:var(--err)}
+#btn-convert{display:none;width:100%;padding:1rem;background:var(--accent);color:#fff;border:none;border-radius:7px;font-family:var(--fu);font-size:.85rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;cursor:pointer;transition:background .15s;margin-bottom:1.25rem}
+#btn-convert.visible{display:block}
+#btn-convert:hover{background:var(--accent2)}
+#progress-panel{display:none;border:1px solid var(--rule);border-radius:8px;padding:1.75rem 1.5rem;background:var(--surface);margin-bottom:1.25rem}
+#progress-panel.visible{display:block}
+.prog-row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:.75rem}
+.prog-msg{font-family:var(--fb);font-size:.95rem;color:var(--ink)}
+.prog-pct{font-size:.82rem;font-weight:700;color:var(--accent)}
+.prog-track{background:#ddd9d0;border-radius:4px;height:6px;overflow:hidden}
+.prog-fill{height:100%;background:var(--accent);border-radius:4px;transition:width .35s cubic-bezier(.4,0,.2,1);width:0%}
+@keyframes pulse-op{0%,100%{opacity:1}50%{opacity:.55}}
+.prog-fill.pulsing{animation:pulse-op 1.4s ease-in-out infinite}
+.prog-sub{margin-top:1rem;padding-top:.75rem;border-top:1px solid var(--rule);font-size:.7rem;color:var(--muted)}
+#result-panel{display:none;margin-bottom:1.25rem}
+#result-panel.visible{display:block}
+.result-ok{border:1px solid #86efac;border-radius:8px;padding:1.25rem 1.5rem;background:var(--green-bg);display:flex;align-items:center;gap:.85rem;margin-bottom:1rem}
+.result-ok-icon{color:var(--green);flex-shrink:0}
+.result-ok-title{font-family:var(--fh);font-size:1rem;font-weight:700;color:#14532d}
+.result-ok-sub{font-size:.72rem;color:var(--green);margin-top:2px}
+#btn-download{width:100%;padding:1rem;background:var(--ink);color:#fff;border:none;border-radius:7px;font-family:var(--fu);font-size:.85rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;cursor:pointer;transition:background .15s;display:flex;align-items:center;justify-content:center;gap:.6rem;margin-bottom:.75rem}
+#btn-download:hover{background:#2a2a2a}
+@keyframes glow-p{0%,100%{box-shadow:0 0 0 0 rgba(13,13,13,.25)}50%{box-shadow:0 0 0 8px rgba(13,13,13,0)}}
+#btn-download.glow{animation:glow-p 2s ease-in-out 3}
+#btn-again{width:100%;padding:.65rem;background:none;border:1px solid var(--rule);border-radius:7px;font-family:var(--fu);font-size:.8rem;color:var(--muted);cursor:pointer;transition:all .15s}
+#btn-again:hover{border-color:var(--ink);color:var(--ink)}
+#meta-panel{margin-top:1.25rem;border:1px solid var(--rule);border-radius:7px;overflow:hidden;display:none}
+#meta-panel.visible{display:block}
+.meta-head{padding:.55rem 1rem;background:var(--surface);border-bottom:1px solid var(--rule);font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:var(--muted)}
+.meta-table{width:100%;border-collapse:collapse}
+.meta-table tr:nth-child(even) td{background:var(--surface)}
+.meta-table td{padding:.42rem 1rem;font-size:.78rem}
+.meta-table td:first-child{color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;font-size:.65rem}
+.meta-table td:last-child{font-family:var(--fb);font-size:.9rem;font-weight:700;text-align:right}
+.unmapped-section{padding:.75rem 1rem;border-top:1px solid var(--rule);background:var(--warn-bg)}
+.unmapped-title{font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--warn);margin-bottom:.5rem}
+.unmapped-chips{display:flex;flex-wrap:wrap;gap:5px}
+.unmapped-chip{font-size:.68rem;font-family:var(--fm);background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:3px}
+.unmapped-hint{font-size:.67rem;color:var(--warn);margin-top:.5rem;line-height:1.5}
+.unmapped-hint code{background:#fef3c7;padding:1px 5px;border-radius:2px;font-family:var(--fm)}
+#error-panel{display:none;padding:.9rem 1rem;border-radius:7px;background:var(--err-bg);border:1px solid #fca5a5;font-size:.85rem;color:var(--err);margin-bottom:1.25rem}
+#error-panel.visible{display:block}
+footer{border-top:1px solid var(--rule);padding:.9rem 2.5rem;display:flex;justify-content:space-between;align-items:center;font-size:.67rem;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <div class="hk">IDML Converter &middot; Client-Side &middot; No Server</div>
+    <h1 class="ht">InDesign <span>&rarr;</span> HTML</h1>
+  </div>
+  <div class="hm">Stories &middot; Paragraph Styles &middot; Character Styles<br>Images &middot; Spread Structure &middot; Output ZIP</div>
+</header>
+
+<main>
+  <div class="steps">
+    <div class="step active" data-step="0"><div class="step-dot">1</div><div class="step-label">Upload</div></div>
+    <div class="step-line" id="line01"></div>
+    <div class="step" data-step="1"><div class="step-dot">2</div><div class="step-label">Parse</div></div>
+    <div class="step-line" id="line12"></div>
+    <div class="step" data-step="2"><div class="step-dot">3</div><div class="step-label">Convert</div></div>
+    <div class="step-line" id="line23"></div>
+    <div class="step" data-step="3"><div class="step-dot">4</div><div class="step-label">Download</div></div>
+  </div>
+
+  <div id="dropzone">
+    <input type="file" id="file-input" accept=".idml" style="display:none"/>
+    <div class="dz-icon"><svg width="44" height="44" viewBox="0 0 44 44" fill="none"><path d="M22 10v18M14 18l8-8 8 8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 32v2a2 2 0 002 2h24a2 2 0 002-2v-2" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg></div>
+    <div class="dz-main">Drop your <strong>.idml</strong> file here</div>
+    <div class="dz-sub">or click to browse &mdash; runs entirely in your browser, nothing uploaded to any server</div>
+  </div>
+
+  <div id="file-card">
+    <div class="fc-icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M13 2H6a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V9l-5-7z" stroke="currentColor" stroke-width="1.5"/><path d="M13 2v7h7" stroke="currentColor" stroke-width="1.5"/></svg></div>
+    <div><div class="fc-name" id="fc-name"></div><div class="fc-size" id="fc-size"></div></div>
+    <button id="file-remove" title="Remove"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+  </div>
+
+  <div id="error-panel"></div>
+  <button id="btn-convert">Convert to HTML</button>
+
+  <div id="progress-panel">
+    <div class="prog-row"><div class="prog-msg" id="prog-msg">Starting&hellip;</div><div class="prog-pct" id="prog-pct">0%</div></div>
+    <div class="prog-track"><div class="prog-fill pulsing" id="prog-fill"></div></div>
+    <div class="prog-sub" id="prog-sub"></div>
+  </div>
+
+  <div id="result-panel">
+    <div class="result-ok">
+      <div class="result-ok-icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M4 11l5 5L18 6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div><div class="result-ok-title">Conversion complete</div><div class="result-ok-sub" id="result-sub"></div></div>
+    </div>
+    <button id="btn-download">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 3v11M6 10l4 4 4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 16v1a1.5 1.5 0 001.5 1.5h11A1.5 1.5 0 0017 17v-1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      Download Output ZIP
+    </button>
+    <button id="btn-again">Convert another file</button>
+    <div id="meta-panel">
+      <div class="meta-head">Conversion Report</div>
+      <table class="meta-table" id="meta-table"></table>
+      <div id="unmapped-section" class="unmapped-section" style="display:none">
+        <div class="unmapped-title">&#9888; Unmapped paragraph styles (used &lt;p&gt; fallback)</div>
+        <div class="unmapped-chips" id="unmapped-chips"></div>
+        <div class="unmapped-hint">Add these to <code>style-map.json</code> in the output ZIP to improve mapping on the next run.</div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <span>Runs 100% in-browser &middot; No data leaves your device</span>
+  <span>JSZip &middot; fast-xml-parser &middot; GitHub Pages compatible</span>
+</footer>
+
+<script>
+'use strict';
+
+// ── Library guard ─────────────────────────────────────────────
+window.addEventListener('load', () => {
+  const missing = [];
+  if (typeof JSZip === 'undefined') missing.push('JSZip');
+  if (missing.length) {
+    document.getElementById('error-panel').innerHTML =
+      `<strong>Failed to load required libraries:</strong> ${missing.join(', ')}. ` +
+      `Check your internet connection and reload the page.`;
+    document.getElementById('error-panel').classList.add('visible');
+    document.getElementById('dropzone').style.opacity = '0.4';
+    document.getElementById('dropzone').style.pointerEvents = 'none';
+  }
+});
+
+// ── Inline XML Parser (replaces fast-xml-parser, no CDN needed) ─────────────
+// Handles InDesign XML: namespaced tags, attributes (@_ prefix), isArray promotion,
+// attribute value parsing, nested structures.
+class IDMLXMLParser {
+  constructor() {
+    this._ARR = new Set([
+      'Story','ParagraphStyleRange','CharacterStyleRange',
+      'Spread','Page','TextFrame','Image','Link',
+      'ParagraphStyle','CharacterStyle','ParagraphStyleGroup','CharacterStyleGroup',
+      'Rectangle','Oval','Group','Table','Row','Cell','Column',
+    ]);
+  }
+  parse(xml) {
+    xml = xml.replace(/<\?[^?]*\?>/g,'').replace(/<!--[\s\S]*?-->/g,'')
+             .replace(/<!DOCTYPE[^>]*>/g,'').trim();
+    const root = {};
+    const stack = [{ obj: root, tag:'__root__', local:'__root__' }];
+    const re = /<(\/?)([A-Za-z_][\w:.-]*)([^>]*?)(\/?)>/g;
+    let pos = 0, m;
+    while ((m = re.exec(xml)) !== null) {
+      const raw = xml.slice(pos, m.index);
+      pos = re.lastIndex;
+      if (raw.trim() && stack.length > 1) {
+        const cur = stack[stack.length-1];
+        if (cur.local === 'Content') cur.obj.__text = this._dec(raw.trim());
+      }
+      const isClose = m[1]==='/';
+      const tagName = m[2];
+      const attrStr = m[3].trim();
+      const isSelf  = m[4]==='/';
+      const local   = tagName.includes(':') ? tagName.split(':').pop() : tagName;
+      if (isClose) {
+        if (stack.length > 1) {
+          const fin = stack.pop();
+          const par = stack[stack.length-1];
+          let val = fin.obj;
+          if (Object.keys(val).length===1 && '__text' in val) val = val.__text;
+          else delete val.__text;
+          this._att(par.obj, tagName, local, val);
+        }
+      } else {
+        const attrs = this._pAttr(attrStr);
+        if (isSelf) {
+          this._att(stack[stack.length-1].obj, tagName, local, attrs);
+        } else {
+          const child = {...attrs};
+          stack.push({obj:child, tag:tagName, local});
+        }
+      }
+    }
+    while (stack.length > 1) {
+      const fin = stack.pop();
+      const par = stack[stack.length-1];
+      let val = fin.obj;
+      if (Object.keys(val).length===1 && '__text' in val) val = val.__text;
+      else delete val.__text;
+      this._att(par.obj, fin.tag, fin.local, val);
+    }
+    return root;
+  }
+  _att(p, tagName, local, val) {
+    const ex = p[tagName];
+    if (this._ARR.has(local)) {
+      if (!ex) p[tagName]=[val]; else ex.push(val);
+    } else {
+      if (ex===undefined) p[tagName]=val;
+      else if (Array.isArray(ex)) ex.push(val);
+      else p[tagName]=[ex,val];
+    }
+  }
+  _pAttr(str) {
+    if (!str) return {};
+    const out={};
+    const re=/([A-Za-z_][\w:.-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+)))?/g;
+    let m;
+    while ((m=re.exec(str))!==null) {
+      if (!m[0].trim()) continue;
+      const v = m[2]!==undefined?m[2]:m[3]!==undefined?m[3]:m[4]!==undefined?m[4]:true;
+      out['@_'+m[1]] = v===true?true:this._coerce(this._dec(String(v)));
+    }
+    return out;
+  }
+  _coerce(v) {
+    if (v==='true') return true; if (v==='false') return false;
+    if (v!==''&&!isNaN(+v)&&v.trim()!=='') return +v;
+    return v;
+  }
+  _dec(s) {
+    return s.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>')
+            .replace(/&quot;/g,'"').replace(/&apos;/g,"'")
+            .replace(/&#(\d+);/g,(_,n)=>String.fromCharCode(+n));
+  }
+}
+
+// ── Style map ────────────────────────────────────────────────
+const STYLE_MAP = {
+  paragraphStyles: {
+    "heading 1":       {tag:"h1",cls:"idml-h1"},
+    "heading 2":       {tag:"h2",cls:"idml-h2"},
+    "heading 3":       {tag:"h3",cls:"idml-h3"},
+    "heading 4":       {tag:"h4",cls:"idml-h4"},
+    "chapter title":   {tag:"h1",cls:"idml-chapter-title"},
+    "chapter number":  {tag:"p", cls:"idml-chapter-number"},
+    "section title":   {tag:"h2",cls:"idml-section-title"},
+    "sub-section":     {tag:"h3",cls:"idml-subsection"},
+    "subheading":      {tag:"h3",cls:"idml-subheading"},
+    "body text":       {tag:"p", cls:"idml-body"},
+    "body":            {tag:"p", cls:"idml-body"},
+    "normal":          {tag:"p", cls:"idml-body"},
+    "no paragraph style":{tag:"p",cls:"idml-body"},
+    "basic paragraph": {tag:"p", cls:"idml-body"},
+    "caption":         {tag:"figcaption",cls:"idml-caption"},
+    "figure caption":  {tag:"figcaption",cls:"idml-caption"},
+    "callout":         {tag:"blockquote",cls:"idml-callout"},
+    "pull quote":      {tag:"blockquote",cls:"idml-pullquote"},
+    "quote":           {tag:"blockquote",cls:"idml-quote"},
+    "list bullet":     {tag:"li",cls:"idml-list-bullet",listType:"ul"},
+    "bullet":          {tag:"li",cls:"idml-list-bullet",listType:"ul"},
+    "list number":     {tag:"li",cls:"idml-list-number",listType:"ol"},
+    "numbered":        {tag:"li",cls:"idml-list-number",listType:"ol"},
+    "note":            {tag:"aside",cls:"idml-note"},
+    "tip":             {tag:"aside",cls:"idml-tip"},
+    "warning":         {tag:"aside",cls:"idml-warning"},
+    "example":         {tag:"div", cls:"idml-example"},
+    "definition":      {tag:"dt",  cls:"idml-definition"},
+    "term":            {tag:"dt",  cls:"idml-term"},
+    "code":            {tag:"pre", cls:"idml-code"},
+    "footer":          {tag:"p",  cls:"idml-footer"},
+    "header":          {tag:"p",  cls:"idml-header"},
+    // ── Textbook custom styles (after group-prefix stripping) ──
+    "head 1 blue":     {tag:"h1", cls:"idml-h1"},
+    "head 2 orange":   {tag:"h2", cls:"idml-h2"},
+    "head-3":          {tag:"h3", cls:"idml-h3"},
+    "head-2":          {tag:"h2", cls:"idml-h2"},
+    "chapter name":    {tag:"h1", cls:"idml-chapter-title"},
+    "c_head 1":        {tag:"h1", cls:"idml-h1"},
+    "c_head 2":        {tag:"h2", cls:"idml-h2"},
+    "c_head-3":        {tag:"h3", cls:"idml-h3"},
+    "c_2-sub hed":     {tag:"h3", cls:"idml-subheading"},
+    "que text":        {tag:"p",  cls:"idml-question"},
+    "question text":   {tag:"p",  cls:"idml-question"},
+    "question":        {tag:"p",  cls:"idml-question"},
+    "c_question":      {tag:"p",  cls:"idml-question"},
+    "1-question":      {tag:"p",  cls:"idml-question"},
+    "c_question indent":{tag:"p", cls:"idml-question-indent"},
+    "question indent": {tag:"p",  cls:"idml-question-indent"},
+    "indent 1":        {tag:"p",  cls:"idml-indent"},
+    "indent 2":        {tag:"p",  cls:"idml-indent2"},
+    "sol text":        {tag:"p",  cls:"idml-solution"},
+    "solution":        {tag:"p",  cls:"idml-solution"},
+    "answer key":      {tag:"div",cls:"idml-answer-key"},
+    "answerkey&solutions":{tag:"div",cls:"idml-answer-key"},
+    "option-2":        {tag:"li", cls:"idml-option", listType:"ol"},
+    "option-4":        {tag:"li", cls:"idml-option", listType:"ol"},
+    "2-option":        {tag:"li", cls:"idml-option", listType:"ol"},
+    "4-options":       {tag:"li", cls:"idml-option", listType:"ol"},
+    "c_4-options":     {tag:"li", cls:"idml-option", listType:"ol"},
+    "c_2-sub":         {tag:"li", cls:"idml-option", listType:"ol"},
+    "18-answer with num":{tag:"li",cls:"idml-answer", listType:"ol"},
+    "19-sub answer":   {tag:"li", cls:"idml-sub-answer", listType:"ol"},
+    "i to ii 1":       {tag:"li", cls:"idml-list-alpha", listType:"ol"},
+    "advanced learning":{tag:"aside",cls:"idml-advanced"},
+    "c_advanced learning":{tag:"aside",cls:"idml-advanced"},
+    "c_figuare labeling t":{tag:"figcaption",cls:"idml-caption"},
+    "figure labeling": {tag:"figcaption",cls:"idml-caption"},
+  },
+  characterStyles: {
+    "bold":           {tag:"strong"},
+    "italic":         {tag:"em"},
+    "bold italic":    {tag:"strong",wrapWith:"em"},
+    "underline":      {tag:"u"},
+    "strikethrough":  {tag:"s"},
+    "superscript":    {tag:"sup"},
+    "subscript":      {tag:"sub"},
+    "code":           {tag:"code"},
+    "highlight":      {tag:"mark"},
+    "emphasis":       {tag:"em"},
+    "strong emphasis":{tag:"strong"},
+  },
+  fallback: {tag:"p",cls:"idml-unstyled"},
+};
+
+// ── Output CSS ───────────────────────────────────────────────
+const OUTPUT_CSS = `/* Generated by IDML Converter */
+:root{--font-body:'Georgia','Times New Roman',serif;--font-head:'Helvetica Neue','Arial',sans-serif;--color-text:#1a1a1a;--color-head:#111;--color-accent:#2563eb;--color-callout:#f0f4ff;--color-note:#fffbeb;--color-warn:#fff0f0;--color-border:#e2e8f0;--max-w:780px}
+*,*::before,*::after{box-sizing:border-box}
+html{font-size:16px}
+body{font-family:var(--font-body);color:var(--color-text);line-height:1.75;margin:0;padding:2rem 1.5rem;background:#fff}
+.idml-page{max-width:var(--max-w);margin:0 auto}
+h1,h2,h3,h4,.idml-h1,.idml-h2,.idml-h3,.idml-h4,.idml-chapter-title,.idml-section-title,.idml-subheading{font-family:var(--font-head);color:var(--color-head);line-height:1.2;margin-top:2em;margin-bottom:.5em}
+.idml-chapter-title,.idml-h1{font-size:2.2rem;font-weight:800;border-bottom:3px solid var(--color-accent);padding-bottom:.3em}
+.idml-chapter-number{font-size:.85rem;font-weight:700;text-transform:uppercase;letter-spacing:.15em;color:var(--color-accent);margin-bottom:.2em}
+.idml-h2,.idml-section-title{font-size:1.6rem;font-weight:700}
+.idml-h3,.idml-subheading,.idml-subsection{font-size:1.25rem;font-weight:600}
+.idml-h4{font-size:1.05rem;font-weight:600}
+.idml-body{margin:0 0 1em}
+.idml-spacer{margin:0;line-height:.5}
+.idml-unstyled{margin:0 0 .75em;color:#555;font-style:italic}
+.idml-list{margin:.75em 0 .75em 1.5em;padding:0}
+.idml-list-bullet,.idml-list-number{margin-bottom:.4em}
+.idml-callout,.idml-pullquote,.idml-quote{border-left:4px solid var(--color-accent);background:var(--color-callout);padding:1em 1.25em;margin:1.5em 0;font-size:1.05rem;font-style:italic;border-radius:0 6px 6px 0}
+.idml-note,.idml-tip,.idml-warning{border-radius:6px;padding:1em 1.25em;margin:1.5em 0;font-size:.95rem}
+.idml-note{background:var(--color-note);border-left:4px solid #f59e0b}
+.idml-tip{background:#f0fdf4;border-left:4px solid #22c55e}
+.idml-warning{background:var(--color-warn);border-left:4px solid #ef4444}
+.idml-note::before{content:'Note: ';font-weight:700}
+.idml-tip::before{content:'Tip: ';font-weight:700}
+.idml-warning::before{content:'Warning: ';font-weight:700}
+figure{margin:1.5em 0}
+figcaption,.idml-caption{font-size:.875rem;color:#666;font-style:italic;text-align:center;margin-top:.4em}
+.idml-code,pre{font-family:'Courier New',Courier,monospace;background:#f1f5f9;border:1px solid var(--color-border);border-radius:4px;padding:1em;overflow-x:auto;font-size:.9rem}
+code{font-family:'Courier New',Courier,monospace;background:#f1f5f9;padding:.1em .35em;border-radius:3px;font-size:.9em}
+a,.idml-link{color:var(--color-accent);text-decoration:underline}
+/* Textbook-specific styles */
+.idml-question{margin:0 0 .5em;font-weight:600}
+.idml-question-indent,.idml-indent{margin:0 0 .5em;margin-left:1.5em}
+.idml-indent2{margin:0 0 .5em;margin-left:3em}
+.idml-solution{margin:0 0 .5em;color:#1a5c2a;border-left:3px solid #22c55e;padding-left:.75em}
+.idml-answer-key{background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;padding:1em 1.25em;margin:1.25em 0}
+.idml-option{margin-bottom:.3em;list-style-type:upper-alpha}
+.idml-answer{margin-bottom:.3em;font-weight:600}
+.idml-sub-answer{margin-bottom:.3em;margin-left:1.5em}
+.idml-list-alpha{list-style-type:lower-roman;margin-bottom:.3em}
+.idml-advanced{background:#faf5ff;border-left:4px solid #9333ea;border-radius:0 6px 6px 0;padding:1em 1.25em;margin:1.5em 0;font-size:.95rem}
+.idml-advanced::before{content:'⭐ Advanced: ';font-weight:700;color:#9333ea}
+ol.idml-list{list-style-type:upper-alpha}
+@media print{body{padding:0;font-size:11pt}}
+`;
+
+
+// ── Utilities ────────────────────────────────────────────────
+function normStyle(raw) {
+  if (!raw) return 'NormalParagraphStyle';
+  let s = raw.replace(/^\$ID\//,'').replace(/^(Paragraph|Character)Style\//,'');
+  // Decode URL-encoding that InDesign uses for group separators (e.g. %3a -> :)
+  try { s = decodeURIComponent(s.replace(/\+/g,' ')); } catch(e) {}
+  // Strip group prefix: "Colour Styles:Head 1 Blue" -> "Head 1 Blue"
+  if (s.includes(':')) s = s.split(':').pop();
+  return s.trim();
+}
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function tick() { return new Promise(r=>setTimeout(r,0)); }
+
+// ── Style resolution ─────────────────────────────────────────
+function extractProps(s) {
+  const p={};
+  ['PointSize','SpaceBefore','SpaceAfter','LeftIndent','Justification','FontStyle'].forEach(k=>{
+    const v = s['@_'+k] ?? s?.Properties?.[k];
+    if (v!==undefined && v!=='') p[k]=v;
+  });
+  return p;
+}
+function resolveInheritance(s,byId,seen=new Set()) {
+  const id=s['@_Self'];
+  if(!id||seen.has(id)) return {};
+  seen.add(id);
+  const pid=s['@_BasedOn'];
+  const parent=(pid&&byId[pid])?resolveInheritance(byId[pid],byId,seen):{};
+  return {...parent,...extractProps(s)};
+}
+function collectStyleNodes(node,tag,acc) {
+  if(!node||typeof node!=='object') return;
+  if(Array.isArray(node[tag])) acc.push(...node[tag]);
+  else if(node[tag]) acc.push(node[tag]);
+  ['RootParagraphStyleGroup','RootCharacterStyleGroup','ParagraphStyleGroup','CharacterStyleGroup'].forEach(g=>{
+    const gs=node[g]; if(!gs) return;
+    (Array.isArray(gs)?gs:[gs]).forEach(n=>collectStyleNodes(n,tag,acc));
+  });
+}
+
+// ── Parser ───────────────────────────────────────────────────
+async function parseIDML(buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+  const xp  = new IDMLXMLParser();
+  const res  = {paragraphStyles:{},characterStyles:{},stories:[],spreads:[],images:[]};
+
+  // Styles
+  const sf = zip.file('Resources/Styles.xml');
+  if (sf) {
+    const doc = xp.parse(await sf.async('text'));
+    const _stylesRaw=doc['idPkg:Styles']; const root=(Array.isArray(_stylesRaw)?_stylesRaw[0]:_stylesRaw)||doc;
+    const rps=[],rcs=[];
+    collectStyleNodes(root,'ParagraphStyle',rps);
+    collectStyleNodes(root,'CharacterStyle',rcs);
+    const psById={};  rps.forEach(s=>{if(s['@_Self']) psById[s['@_Self']]=s;});
+    const csById={};  rcs.forEach(s=>{if(s['@_Self']) csById[s['@_Self']]=s;});
+    rps.forEach(s=>{const n=s['@_Name']||s['@_Self']; res.paragraphStyles[n]={name:n,resolved:resolveInheritance(s,psById)};});
+    rcs.forEach(s=>{const n=s['@_Name']||s['@_Self']; res.characterStyles[n]={name:n,resolved:resolveInheritance(s,csById)};});
+  }
+
+  // Stories
+  for (const f of zip.file(/^Stories\/Story_.*\.xml$/)) {
+    let doc; try{doc=xp.parse(await f.async('text'));}catch(e){continue;}
+    const _sr=doc?.['idPkg:Story']; const sr=Array.isArray(_sr)?_sr[0]:_sr; if(!sr?.Story) continue;
+    for (const s of (Array.isArray(sr.Story)?sr.Story:[sr.Story])) {
+      const parsed=parseStory(s);
+      if(parsed.blocks.length) res.stories.push(parsed);
+    }
+  }
+
+  // Spreads
+  for (const f of zip.file(/^Spreads\/Spread_.*\.xml$/)) {
+    let doc; try{doc=xp.parse(await f.async('text'));}catch(e){continue;}
+    const _sp=doc?.['idPkg:Spread']; const _spU=Array.isArray(_sp)?_sp[0]:_sp; const sr=_spU?.Spread; if(!sr) continue;
+    (Array.isArray(sr)?sr:[sr]).forEach(sp=>{
+      const obj={id:sp['@_Self'],frames:[]};
+      collectFrames(sp,obj.frames);
+      res.spreads.push(obj);
+    });
+  }
+
+  // Images
+  zip.file(/\.(png|jpe?g|gif|svg|eps|tiff?)$/i).forEach(f=>{
+    res.images.push({name:f.name.split('/').pop(),file:f});
+  });
+
+  return res;
+}
+
+function parseStory(story) {
+  const blocks=[];
+  const prs=story.ParagraphStyleRange;
+  if(!prs) return {id:story['@_Self']||'',blocks};
+  (Array.isArray(prs)?prs:[prs]).forEach(pr=>{
+    const b=parsePR(pr); if(b) blocks.push(b);
+  });
+  return {id:story['@_Self']||'',blocks};
+}
+
+function parsePR(pr) {
+  const styleName=normStyle(pr['@_AppliedParagraphStyle']||'');
+  const spans=[];
+  const crs=pr.CharacterStyleRange;
+  if(crs)(Array.isArray(crs)?crs:[crs]).forEach(cr=>{const s=parseCR(cr);if(s)spans.push(s);});
+  if(!spans.map(s=>s.text).join('').trim()) return null;
+  return {styleName,spans};
+}
+
+function parseCR(cr) {
+  const styleName=normStyle(cr['@_AppliedCharacterStyle']||'');
+  let text='';
+  const c=cr.Content;
+  if(c===undefined||c===null) text='';
+  else if(typeof c==='string') text=c;
+  else if(typeof c==='number') text=String(c);
+  else if(Array.isArray(c)) text=c.map(x=>typeof x==='string'?x:typeof x==='number'?String(x):(x?.['#text']||'')).join('');
+  else if(typeof c==='object') text=c['#text']||'';
+  text=text.replace(/\u0003/g,'\n').replace(/\u0009/g,'\t').replace(/\uFFFD/g,'').replace(/\u000B/g,'\n');
+  const p={};
+  if(cr['@_FontStyle']) p.fontStyle=cr['@_FontStyle'];
+  if(cr['@_Underline']===true||cr['@_Underline']==='true') p.underline=true;
+  if(cr['@_StrikeThru']===true||cr['@_StrikeThru']==='true') p.strikethrough=true;
+  if(cr['@_Position']==='Superscript') p.superscript=true;
+  if(cr['@_Position']==='Subscript')   p.subscript=true;
+  return {styleName,text,props:p};
+}
+
+function collectFrames(node,frames) {
+  if(!node||typeof node!=='object') return;
+  ['TextFrame','Group'].forEach(type=>{
+    const items=node[type]; if(!items) return;
+    (Array.isArray(items)?items:[items]).forEach(item=>{
+      if(type==='TextFrame'&&item['@_Self'])
+        frames.push({id:item['@_Self'],storyRef:item['@_ParentStory'],next:item['@_NextTextFrame'],prev:item['@_PreviousTextFrame']});
+      if(type==='Group') collectFrames(item,frames);
+    });
+  });
+}
+
+// ── Converter ────────────────────────────────────────────────
+function mapPS(name) {
+  const lower=(name||'').toLowerCase();
+  const entries=Object.entries(STYLE_MAP.paragraphStyles);
+  for(const[k,v]of entries) if(lower===k) return v;
+  for(const[k,v]of entries) if(lower.includes(k)||k.includes(lower)) return v;
+  return {...STYLE_MAP.fallback,_unmapped:name};
+}
+function mapCS(name) {
+  if(!name) return null;
+  const lower=name.toLowerCase();
+  if(lower.includes('no character')||lower==='$id/[no character style]') return null;
+  const entries=Object.entries(STYLE_MAP.characterStyles);
+  for(const[k,v]of entries) if(lower===k) return v;
+  for(const[k,v]of entries) if(lower.includes(k)) return v;
+  return null;
+}
+function spansToHTML(spans) {
+  return spans.map(span=>{
+    let t=esc(span.text); if(!t) return '';
+    const m=mapCS(span.styleName);
+    if(m&&m.tag&&m.tag!=='span'){
+      const cls=m.cls?` class="${m.cls}"`:'';
+      t=m.wrapWith?`<${m.wrapWith}><${m.tag}${cls}>${t}</${m.tag}></${m.wrapWith}>`:`<${m.tag}${cls}>${t}</${m.tag}>`;
+    }
+    const p=span.props||{};
+    if(p.superscript)   t=`<sup>${t}</sup>`;
+    if(p.subscript)     t=`<sub>${t}</sub>`;
+    if(p.underline)     t=`<u>${t}</u>`;
+    if(p.strikethrough) t=`<s>${t}</s>`;
+    if(p.fontStyle){
+      const fs=p.fontStyle.toLowerCase();
+      if(fs.includes('bold')&&fs.includes('italic')) t=`<strong><em>${t}</em></strong>`;
+      else if(fs.includes('bold')||fs.includes('heavy')) t=`<strong>${t}</strong>`;
+      else if(fs.includes('italic')||fs.includes('oblique')) t=`<em>${t}</em>`;
+    }
+    return t;
+  }).join('');
+}
+function getOrderedBlocks(parsed) {
+  if(!parsed.spreads.length) return parsed.stories.flatMap(s=>s.blocks);
+  const sm={}; parsed.stories.forEach(s=>{sm[s.id]=s;});
+  const fm={}; const af=parsed.spreads.flatMap(s=>s.frames); af.forEach(f=>{fm[f.id]=f;});
+  const visited=new Set(),blocks=[];
+  const walk=f=>{if(!f)return;const sid=f.storyRef;if(sid&&!visited.has(sid)){visited.add(sid);const st=sm[sid];if(st)blocks.push(...st.blocks);}if(f.next&&fm[f.next])walk(fm[f.next]);};
+  af.filter(f=>!f.prev||!fm[f.prev]).forEach(walk);
+  parsed.stories.forEach(s=>{if(!visited.has(s.id))blocks.push(...s.blocks);});
+  return blocks;
+}
+function blocksToHTML(blocks) {
+  const nodes=[],lb=[]; let lt=null;
+  const flush=()=>{if(!lb.length)return;nodes.push(`<${lt} class="idml-list">\n${lb.join('\n')}\n</${lt}>`);lb.length=0;lt=null;};
+  for(const b of blocks){
+    const m=mapPS(b.styleName);
+    const inner=spansToHTML(b.spans);
+    if(!inner.trim()){flush();nodes.push('<p class="idml-spacer">&nbsp;</p>');continue;}
+    if(m.listType){
+      if(lt&&lt!==m.listType)flush();
+      lt=m.listType;
+      lb.push(`  <${m.tag} class="${m.cls}">${inner}</${m.tag}>`);
+    } else {
+      flush();
+      const cls=m.cls?` class="${m.cls}"`:'' ;
+      if(m.tag==='figcaption') nodes.push(`<figure>\n  <figcaption${cls}>${inner}</figcaption>\n</figure>`);
+      else nodes.push(`<${m.tag}${cls}>${inner}</${m.tag}>`);
+    }
+  }
+  flush();
+  return nodes;
+}
+function buildMeta(parsed,blocks) {
+  const freq={};
+  blocks.forEach(b=>{freq[b.styleName]=(freq[b.styleName]||0)+1;});
+  return {
+    generatedAt:new Date().toISOString(),
+    storiesFound:parsed.stories.length,
+    spreadsFound:parsed.spreads.length,
+    totalBlocks:blocks.length,
+    imagesReferenced:parsed.images.length,
+    paragraphStylesInDocument:Object.keys(parsed.paragraphStyles).length,
+    styleUsageFrequency:freq,
+    unmappedStyles:Object.keys(freq).filter(n=>mapPS(n)._unmapped),
+  };
+}
+async function buildZip(parsed,title) {
+  const blocks=getOrderedBlocks(parsed);
+  const nodes=blocksToHTML(blocks);
+  const meta=buildMeta(parsed,blocks);
+  const html=`<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8"/>\n<meta name="viewport" content="width=device-width,initial-scale=1.0"/>\n<title>${esc(title)}</title>\n<link rel="stylesheet" href="styles.css"/>\n</head>\n<body>\n<main class="idml-page">\n\n${nodes.join('\n')}\n\n</main>\n</body>\n</html>`;
+  const zip=new JSZip();
+  zip.file('index.html',html);
+  zip.file('styles.css',OUTPUT_CSS);
+  zip.file('metadata.json',JSON.stringify(meta,null,2));
+  zip.file('style-map.json',JSON.stringify({_note:"Edit paragraphStyles/characterStyles to improve mapping.",paragraphStyles:STYLE_MAP.paragraphStyles,characterStyles:STYLE_MAP.characterStyles,fallback:STYLE_MAP.fallback},null,2));
+  const imgF=zip.folder('images');
+  for(const img of parsed.images){try{imgF.file(img.name,await img.file.async('uint8array'));}catch(e){}}
+  return {zip,meta};
+}
+
+// ── UI ───────────────────────────────────────────────────────
+let selFile=null,outBlob=null,outName='';
+const $=id=>document.getElementById(id);
+
+function setStep(n){
+  document.querySelectorAll('.step').forEach((el,i)=>{
+    el.classList.remove('active','done');
+    if(i<n)el.classList.add('done');
+    else if(i===n)el.classList.add('active');
+  });
+  const CHECK=`<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7l4 4 6-7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  document.querySelectorAll('.step.done .step-dot').forEach(d=>{d.innerHTML=CHECK;});
+  [['line01',0],['line12',1],['line23',2]].forEach(([id,i])=>{
+    const el=$(id); if(el) el.classList.toggle('done',i<n);
+  });
+}
+function setProgress(pct,msg,sub){
+  $('prog-fill').style.width=pct+'%';
+  $('prog-pct').textContent=pct+'%';
+  $('prog-msg').textContent=msg||'';
+  $('prog-sub').textContent=sub||'';
+}
+function showError(msg){$('error-panel').innerHTML=`<strong>Error:</strong> ${esc(msg)}`;$('error-panel').classList.add('visible');}
+function hideError(){$('error-panel').classList.remove('visible');}
+function resetUI(){
+  selFile=null;outBlob=null;outName='';
+  $('file-card').classList.remove('visible');
+  $('btn-convert').classList.remove('visible');
+  $('progress-panel').classList.remove('visible');
+  $('result-panel').classList.remove('visible');
+  $('meta-panel').classList.remove('visible');
+  $('dropzone').style.display='';
+  hideError(); setStep(0);
+}
+function setFile(f){
+  if(!f||!f.name.toLowerCase().endsWith('.idml')){showError('Please select a .idml file.');return;}
+  hideError(); selFile=f;
+  $('fc-name').textContent=f.name;
+  $('fc-size').textContent=(f.size/1024).toFixed(0)+' KB';
+  $('file-card').classList.add('visible');
+  $('btn-convert').classList.add('visible');
+  setStep(0);
+}
+const dz=$('dropzone');
+dz.addEventListener('click',()=>$('file-input').click());
+dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('drag-over');});
+dz.addEventListener('dragleave',()=>dz.classList.remove('drag-over'));
+dz.addEventListener('drop',e=>{e.preventDefault();dz.classList.remove('drag-over');setFile(e.dataTransfer.files[0]);});
+$('file-input').addEventListener('change',e=>setFile(e.target.files[0]));
+$('file-remove').addEventListener('click',()=>{selFile=null;$('file-card').classList.remove('visible');$('btn-convert').classList.remove('visible');$('file-input').value='';});
+
+$('btn-convert').addEventListener('click',async()=>{
+  if(!selFile) return;
+  hideError();
+  $('dropzone').style.display='none';
+  $('file-card').classList.remove('visible');
+  $('btn-convert').classList.remove('visible');
+  $('progress-panel').classList.add('visible');
+  $('prog-fill').classList.add('pulsing');
+  setStep(1); setProgress(10,'Reading file…',selFile.name);
+  try {
+    const buffer=await selFile.arrayBuffer();
+    setProgress(25,'Unzipping IDML package…','Parsing XML structure'); await tick();
+    const parsed=await parseIDML(buffer);
+    setStep(2); setProgress(55,'Resolving style inheritance…',`${parsed.stories.length} stories · ${Object.keys(parsed.paragraphStyles).length} paragraph styles`); await tick();
+    setProgress(72,'Converting blocks to HTML…','Mapping paragraph and character styles'); await tick();
+    const title=selFile.name.replace(/\.idml$/i,'');
+    const {zip,meta}=await buildZip(parsed,title);
+    setProgress(88,'Packaging output ZIP…','Bundling HTML · CSS · images · metadata'); await tick();
+    outBlob=await zip.generateAsync({type:'blob',compression:'DEFLATE',compressionOptions:{level:6}});
+    outName=title+'_converted.zip';
+    setProgress(100,'Done!','');
+    $('prog-fill').classList.remove('pulsing');
+    setStep(3);
+    $('progress-panel').classList.remove('visible');
+    $('result-panel').classList.add('visible');
+    $('result-sub').textContent=`${title} — index.html · styles.css · images/ · metadata.json`;
+    showMeta(meta);
+    setTimeout(()=>$('btn-download').classList.add('glow'),200);
+  } catch(err) {
+    $('progress-panel').classList.remove('visible');
+    $('dropzone').style.display='';
+    showError(err.message||String(err));
+    setStep(0);
+    $('btn-convert').classList.add('visible');
+    $('file-card').classList.add('visible');
+    console.error(err);
+  }
+});
+
+function showMeta(meta){
+  const rows=[['Stories found',meta.storiesFound],['Spreads found',meta.spreadsFound],['Total paragraphs',meta.totalBlocks],['Images referenced',meta.imagesReferenced],['Paragraph styles',meta.paragraphStylesInDocument],['Unmapped styles',meta.unmappedStyles.length]];
+  $('meta-table').innerHTML=rows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('');
+  if(meta.unmappedStyles.length){
+    $('unmapped-chips').innerHTML=meta.unmappedStyles.map(s=>`<span class="unmapped-chip">${esc(s)}</span>`).join('');
+    $('unmapped-section').style.display='';
+  } else {
+    $('unmapped-section').style.display='none';
+  }
+  $('meta-panel').classList.add('visible');
+}
+$('btn-download').addEventListener('click',()=>{
+  if(!outBlob) return;
+  const url=URL.createObjectURL(outBlob);
+  const a=document.createElement('a'); a.href=url; a.download=outName;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),5000);
+});
+$('btn-again').addEventListener('click',resetUI);
+</script>
+</body>
+</html>
