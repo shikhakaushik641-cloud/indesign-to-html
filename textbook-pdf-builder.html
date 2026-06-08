@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Textbook PDF Builder</title>
+<style>
+/* ── App UI tokens ─────────────────────────────── */
+:root{
+  --ink:#0d0d0d; --paper:#f7f5f0; --accent:#1a3a6e; --accent2:#e8632a;
+  --rule:#ccc8bf; --muted:#7a746c; --surface:#efece5; --raised:#fdfcf9;
+  --green:#1a7a3c; --err:#991b0f; --err-bg:#fff0ee;
+  --fh:'Georgia',serif; --fu:'Helvetica Neue',Arial,sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{font-size:15px}
+body{background:var(--paper);color:var(--ink);font-family:var(--fu);min-height:100vh;display:flex;flex-direction:column}
+header{border-bottom:3px double var(--ink);padding:1.25rem 2rem 1rem;display:flex;align-items:flex-end;gap:1.5rem;background:var(--raised)}
+.hk{font-size:.58rem;font-weight:700;letter-spacing:.28em;text-transform:uppercase;color:var(--accent);margin-bottom:.25rem}
+.ht{font-family:var(--fh);font-size:1.7rem;font-weight:700;line-height:1;color:var(--ink)}
+.ht span{color:var(--accent2)}
+.hm{margin-left:auto;font-size:.65rem;color:var(--muted);line-height:1.7;text-align:right}
+main{flex:1;display:grid;grid-template-columns:320px 1fr;gap:0;max-height:calc(100vh - 68px)}
+
+/* ── Left panel ────────────────────────────────── */
+.panel{border-right:1px solid var(--rule);display:flex;flex-direction:column;overflow:hidden;background:var(--raised)}
+.panel-head{padding:.7rem 1rem;background:var(--surface);border-bottom:1px solid var(--rule);font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
+.panel-body{flex:1;overflow-y:auto;padding:1rem}
+
+/* ── Drop zones ────────────────────────────────── */
+.dropzone{border:2px dashed var(--rule);border-radius:8px;padding:1.5rem 1rem;text-align:center;cursor:pointer;background:var(--surface);transition:all .2s;margin-bottom:1rem}
+.dropzone:hover,.dropzone.drag{border-color:var(--accent);background:#eef1f8}
+.dz-icon{color:var(--muted);margin-bottom:.5rem;transition:color .2s}
+.dropzone:hover .dz-icon,.dropzone.drag .dz-icon{color:var(--accent)}
+.dz-title{font-size:.85rem;font-weight:600;color:var(--ink);margin-bottom:.2rem}
+.dz-sub{font-size:.7rem;color:var(--muted)}
+
+/* ── File list ─────────────────────────────────── */
+.file-list{display:flex;flex-direction:column;gap:6px;margin-bottom:1rem}
+.file-item{display:flex;align-items:center;gap:.5rem;padding:.45rem .65rem;border:1px solid var(--rule);border-radius:5px;background:var(--raised);font-size:.75rem}
+.file-item.html-file{border-left:3px solid var(--accent)}
+.file-item.img-file{border-left:3px solid var(--accent2)}
+.fi-icon{flex-shrink:0;font-size:.8rem}
+.fi-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.fi-rm{background:none;border:none;cursor:pointer;color:var(--muted);padding:2px 4px;border-radius:3px;font-size:.75rem;line-height:1;transition:color .15s}
+.fi-rm:hover{color:var(--err)}
+.drag-handle{cursor:grab;color:var(--rule);font-size:.9rem;flex-shrink:0}
+.drag-handle:active{cursor:grabbing}
+
+/* ── Settings ──────────────────────────────────── */
+.settings{border-top:1px solid var(--rule);padding:.85rem 1rem}
+.setting-row{display:flex;flex-direction:column;gap:.25rem;margin-bottom:.75rem}
+.setting-label{font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+.setting-input{font-size:.78rem;padding:.35rem .6rem;border:1px solid var(--rule);border-radius:4px;background:var(--raised);color:var(--ink);font-family:var(--fu)}
+.setting-input:focus{outline:none;border-color:var(--accent)}
+select.setting-input{cursor:pointer}
+.setting-row-h{display:flex;align-items:center;justify-content:space-between}
+.toggle{position:relative;width:34px;height:18px;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0}
+.toggle-slider{position:absolute;inset:0;background:#ccc;border-radius:18px;cursor:pointer;transition:.2s}
+.toggle-slider::before{content:'';position:absolute;width:14px;height:14px;left:2px;bottom:2px;background:#fff;border-radius:50%;transition:.2s}
+.toggle input:checked + .toggle-slider{background:var(--accent)}
+.toggle input:checked + .toggle-slider::before{transform:translateX(16px)}
+
+/* ── Buttons ───────────────────────────────────── */
+.btn{width:100%;padding:.75rem;border:none;border-radius:6px;font-family:var(--fu);font-size:.8rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:all .15s}
+.btn-primary{background:var(--accent);color:#fff;margin-bottom:.5rem}
+.btn-primary:hover{background:#254d8f}
+.btn-primary:disabled{background:var(--muted);cursor:not-allowed}
+.btn-ghost{background:none;border:1px solid var(--rule);color:var(--muted)}
+.btn-ghost:hover{border-color:var(--ink);color:var(--ink)}
+
+/* ── Preview pane ──────────────────────────────── */
+.preview-pane{display:flex;flex-direction:column;overflow:hidden}
+.preview-toolbar{padding:.5rem 1rem;background:var(--surface);border-bottom:1px solid var(--rule);display:flex;align-items:center;gap:.75rem;flex-shrink:0}
+.tb-label{font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
+.tb-spacer{flex:1}
+.page-nav{display:flex;align-items:center;gap:.4rem;font-size:.75rem;color:var(--ink)}
+.page-nav button{background:none;border:1px solid var(--rule);border-radius:3px;padding:2px 7px;cursor:pointer;font-size:.72rem;transition:all .15s}
+.page-nav button:hover{border-color:var(--ink)}
+.zoom-select{font-size:.72rem;padding:2px 6px;border:1px solid var(--rule);border-radius:3px;background:var(--raised);cursor:pointer}
+.preview-frame-wrap{flex:1;overflow:auto;background:#888;display:flex;justify-content:center;padding:1.5rem}
+iframe#preview{background:#fff;box-shadow:0 2px 20px rgba(0,0,0,.35);border:none;transform-origin:top center;transition:transform .2s}
+
+/* ── Status bar ────────────────────────────────── */
+#statusbar{padding:.35rem 1rem;font-size:.65rem;color:var(--muted);border-top:1px solid var(--rule);background:var(--surface);flex-shrink:0}
+
+/* ── Empty state ───────────────────────────────── */
+.empty-preview{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;color:var(--muted);background:#999;padding:2rem;text-align:center}
+.empty-preview svg{opacity:.4}
+.empty-preview p{font-size:.85rem;opacity:.7;max-width:280px;line-height:1.5}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <div class="hk">Textbook PDF Builder</div>
+    <h1 class="ht">HTML <span>&rarr;</span> Textbook PDF</h1>
+  </div>
+  <div class="hm">Upload HTML pages &middot; Add images &middot; Set layout &middot; Print to PDF</div>
+</header>
+
+<main>
+  <!-- ── Left panel ── -->
+  <aside class="panel">
+    <div class="panel-head">Files &amp; Pages</div>
+    <div class="panel-body">
+
+      <!-- HTML drop -->
+      <div class="dropzone" id="dz-html">
+        <input type="file" id="fi-html" accept=".html,.htm" multiple style="display:none"/>
+        <div class="dz-icon">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><rect x="4" y="2" width="14" height="20" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M14 2l6 6v14a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2h8z" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M14 2v6h6" stroke="currentColor" stroke-width="1.5"/><path d="M8 14l3 3-3 3M13 17h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </div>
+        <div class="dz-title">Drop HTML pages here</div>
+        <div class="dz-sub">or click &mdash; multiple files OK &middot; drag to reorder</div>
+      </div>
+
+      <!-- HTML file list -->
+      <div class="file-list" id="html-list"></div>
+
+      <!-- Image drop -->
+      <div class="dropzone" id="dz-img">
+        <input type="file" id="fi-img" accept="image/*" multiple style="display:none"/>
+        <div class="dz-icon">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><rect x="3" y="5" width="22" height="18" rx="2" stroke="currentColor" stroke-width="1.5"/><circle cx="9" cy="11" r="2" stroke="currentColor" stroke-width="1.5"/><path d="M3 19l6-5 4 4 3-3 6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="dz-title">Drop images here</div>
+        <div class="dz-sub">PNG, JPG, SVG &middot; referenced by HTML &lt;img src="filename"&gt;</div>
+      </div>
+
+      <!-- Image list -->
+      <div class="file-list" id="img-list"></div>
+
+    </div><!-- /panel-body -->
+
+    <!-- Settings -->
+    <div class="settings">
+      <div class="setting-row">
+        <div class="setting-label">Page size</div>
+        <select class="setting-input" id="set-pagesize">
+          <option value="A4">A4 (210 × 297 mm)</option>
+          <option value="A5">A5 (148 × 210 mm)</option>
+          <option value="letter">US Letter (8.5 × 11 in)</option>
+          <option value="custom">Custom</option>
+        </select>
+      </div>
+      <div class="setting-row" id="custom-size-row" style="display:none">
+        <div class="setting-label">Width × Height (mm)</div>
+        <div style="display:flex;gap:.4rem">
+          <input class="setting-input" id="set-w" type="number" value="210" min="50" max="600" style="flex:1"/>
+          <span style="align-self:center;font-size:.8rem;color:var(--muted)">×</span>
+          <input class="setting-input" id="set-h" type="number" value="297" min="50" max="800" style="flex:1"/>
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-label">Margins (mm)</div>
+        <input class="setting-input" id="set-margin" type="number" value="15" min="0" max="50"/>
+      </div>
+      <div class="setting-row">
+        <div class="setting-label">Columns</div>
+        <select class="setting-input" id="set-cols">
+          <option value="1">Single column</option>
+          <option value="2" selected>Two columns (textbook)</option>
+          <option value="3">Three columns</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <div class="setting-label">Chapter sidebar</div>
+        <div class="setting-row-h">
+          <span style="font-size:.75rem;color:var(--ink)">Rotated right-side chapter title</span>
+          <label class="toggle"><input type="checkbox" id="set-sidebar" checked/><span class="toggle-slider"></span></label>
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-label">Chapter number</div>
+        <input class="setting-input" id="set-chapnum" type="number" value="1" min="1" max="99"/>
+      </div>
+      <div class="setting-row">
+        <div class="setting-label">Chapter title</div>
+        <input class="setting-input" id="set-chaptitle" type="text" value="Electric Charges and Fields"/>
+      </div>
+      <div class="setting-row">
+        <div class="setting-label">Subject &amp; class</div>
+        <input class="setting-input" id="set-subject" type="text" value="JEE (XII) Module-1 | PHYSICS"/>
+      </div>
+      <div style="display:flex;gap:.5rem;margin-bottom:.5rem">
+        <div class="setting-row" style="flex:1;margin-bottom:0">
+          <div class="setting-label">Accent colour</div>
+          <input type="color" id="set-accent" value="#1a3a6e" style="width:100%;height:28px;border:1px solid var(--rule);border-radius:4px;cursor:pointer;background:var(--raised)"/>
+        </div>
+        <div class="setting-row" style="flex:1;margin-bottom:0">
+          <div class="setting-label">Heading colour</div>
+          <input type="color" id="set-heading" value="#e8632a" style="width:100%;height:28px;border:1px solid var(--rule);border-radius:4px;cursor:pointer;background:var(--raised)"/>
+        </div>
+      </div>
+
+      <button class="btn btn-primary" id="btn-preview">Preview</button>
+      <button class="btn btn-primary" id="btn-print" style="background:#1a7a3c" disabled>Print / Save PDF</button>
+      <button class="btn btn-ghost" id="btn-clear">Clear all</button>
+    </div>
+  </aside>
+
+  <!-- ── Preview pane ── -->
+  <div class="preview-pane">
+    <div class="preview-toolbar">
+      <span class="tb-label">Preview</span>
+      <div class="page-nav">
+        <button id="pg-prev">&lsaquo;</button>
+        <span id="pg-info">— / —</span>
+        <button id="pg-next">&rsaquo;</button>
+      </div>
+      <div class="tb-spacer"></div>
+      <select class="zoom-select" id="zoom-select">
+        <option value="0.5">50%</option>
+        <option value="0.65">65%</option>
+        <option value="0.8" selected>80%</option>
+        <option value="1">100%</option>
+        <option value="1.2">120%</option>
+      </select>
+      <span class="tb-label" id="tb-status"></span>
+    </div>
+
+    <div class="preview-frame-wrap" id="preview-wrap">
+      <div class="empty-preview" id="empty-state">
+        <svg width="64" height="64" viewBox="0 0 64 64" fill="none"><rect x="8" y="4" width="36" height="52" rx="3" stroke="#fff" stroke-width="2"/><path d="M36 4l12 12v40a3 3 0 01-3 3H11a3 3 0 01-3-3V7a3 3 0 013-3h25z" stroke="#fff" stroke-width="2" fill="none"/><path d="M36 4v12h12" stroke="#fff" stroke-width="2"/><path d="M16 26h24M16 32h24M16 38h16" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>
+        <p>Add HTML pages on the left, then click <strong>Preview</strong> to see the textbook layout.</p>
+      </div>
+      <iframe id="preview" style="display:none"></iframe>
+    </div>
+    <div id="statusbar">Ready &mdash; add HTML files and images to begin</div>
+  </div>
+</main>
+
+<script>
+'use strict';
+
+// ── State ────────────────────────────────────────
+const state = {
+  htmlFiles: [],   // {name, content}  — ordered pages
+  imgFiles:  {},   // name -> dataURL
+  dragSrc:   null,
+};
+
+// ── DOM refs ─────────────────────────────────────
+const $ = id => document.getElementById(id);
+const htmlList   = $('html-list');
+const imgList    = $('img-list');
+const btnPreview = $('btn-preview');
+const btnPrint   = $('btn-print');
+const preview    = $('preview');
+const emptyState = $('empty-state');
+const statusbar  = $('statusbar');
+const pgInfo     = $('pg-info');
+
+// ── File reading helpers ─────────────────────────
+function readText(file) {
+  return new Promise(res => {
+    const r = new FileReader(); r.onload = e => res(e.target.result); r.readAsText(file);
+  });
+}
+function readDataURL(file) {
+  return new Promise(res => {
+    const r = new FileReader(); r.onload = e => res(e.target.result); r.readAsDataURL(file);
+  });
+}
+
+// ── HTML file drop/pick ──────────────────────────
+setupDrop('dz-html', 'fi-html', ['.html','.htm'], handleHTMLFiles);
+setupDrop('dz-img',  'fi-img',  ['image/*'],      handleImageFiles);
+
+function setupDrop(dzId, fiId, accept, handler) {
+  const dz = $(dzId), fi = $(fiId);
+  dz.addEventListener('click', () => fi.click());
+  dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('drag'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('drag');
+    handler([...e.dataTransfer.files]);
+  });
+  fi.addEventListener('change', e => { handler([...e.target.files]); fi.value=''; });
+}
+
+async function handleHTMLFiles(files) {
+  for (const f of files) {
+    if (!f.name.match(/\.html?$/i)) continue;
+    const already = state.htmlFiles.findIndex(x => x.name === f.name);
+    const content = await readText(f);
+    if (already >= 0) state.htmlFiles[already].content = content;
+    else state.htmlFiles.push({ name: f.name, content });
+  }
+  renderHTMLList();
+  setStatus(`${state.htmlFiles.length} HTML page(s) loaded`);
+}
+
+async function handleImageFiles(files) {
+  for (const f of files) {
+    state.imgFiles[f.name] = await readDataURL(f);
+  }
+  renderImgList();
+  setStatus(`${Object.keys(state.imgFiles).length} image(s) loaded`);
+}
+
+// ── Render file lists ────────────────────────────
+function renderHTMLList() {
+  htmlList.innerHTML = '';
+  state.htmlFiles.forEach((f, i) => {
+    const div = document.createElement('div');
+    div.className = 'file-item html-file';
+    div.draggable = true;
+    div.dataset.idx = i;
+    div.innerHTML = `
+      <span class="drag-handle" title="Drag to reorder">&#9776;</span>
+      <span class="fi-icon">&#128196;</span>
+      <span class="fi-name" title="${f.name}">${i+1}. ${f.name}</span>
+      <button class="fi-rm" data-i="${i}" title="Remove">&times;</button>
+    `;
+    // Remove
+    div.querySelector('.fi-rm').addEventListener('click', e => {
+      state.htmlFiles.splice(+e.target.dataset.i, 1);
+      renderHTMLList();
+    });
+    // Drag reorder
+    div.addEventListener('dragstart', e => { state.dragSrc = i; e.dataTransfer.effectAllowed='move'; });
+    div.addEventListener('dragover',  e => { e.preventDefault(); div.style.opacity='.5'; });
+    div.addEventListener('dragleave', () => div.style.opacity='');
+    div.addEventListener('drop', e => {
+      e.preventDefault(); div.style.opacity='';
+      if (state.dragSrc === i) return;
+      const moved = state.htmlFiles.splice(state.dragSrc, 1)[0];
+      state.htmlFiles.splice(i, 0, moved);
+      renderHTMLList();
+    });
+    htmlList.appendChild(div);
+  });
+}
+
+function renderImgList() {
+  imgList.innerHTML = '';
+  Object.keys(state.imgFiles).forEach(name => {
+    const div = document.createElement('div');
+    div.className = 'file-item img-file';
+    div.innerHTML = `
+      <span class="fi-icon">&#128247;</span>
+      <span class="fi-name" title="${name}">${name}</span>
+      <button class="fi-rm" data-name="${name}" title="Remove">&times;</button>
+    `;
+    div.querySelector('.fi-rm').addEventListener('click', e => {
+      delete state.imgFiles[e.target.dataset.name];
+      renderImgList();
+    });
+    imgList.appendChild(div);
+  });
+}
+
+// ── Settings helpers ─────────────────────────────
+$('set-pagesize').addEventListener('change', () => {
+  $('custom-size-row').style.display = $('set-pagesize').value === 'custom' ? '' : 'none';
+});
+
+function getPageDims() {
+  const sizes = { A4:[210,297], A5:[148,210], letter:[216,279] };
+  const el = $('set-pagesize');
+  const ps = el ? el.value : 'A4';
+  if (ps === 'custom') {
+    const w = +($('set-w')?.value||210);
+    const h = +($('set-h')?.value||297);
+    return [w, h];
+  }
+  return sizes[ps] || [210,297];
+}
+
+// ── Build assembled HTML document ───────────────
+function buildDocument() {
+  const [pw, ph]   = getPageDims();
+  const margin     = +$('set-margin').value;
+  const cols       = +$('set-cols').value;
+  const sidebar    = $('set-sidebar').checked;
+  const chapNum    = $('set-chapnum').value;
+  const chapTitle  = $('set-chaptitle').value;
+  const subject    = $('set-subject').value;
+  const accentCol  = $('set-accent').value;
+  const headCol    = $('set-heading').value;
+
+  // Replace image src references in all HTML pages
+  const pages = state.htmlFiles.map(f => {
+    let html = f.content;
+    // Strip DOCTYPE/html/head/body wrapper if present - extract body content
+    const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    let body = bodyMatch ? bodyMatch[1] : html;
+    // Replace image filenames with data URLs
+    Object.entries(state.imgFiles).forEach(([name, dataURL]) => {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      body = body.replace(new RegExp(`src=["'](?:[^"']*\/)?${escaped}["']`, 'g'), `src="${dataURL}"`);
+    });
+    return body;
+  });
+
+  const sidebarHTML = sidebar ? `
+    <div class="tb-sidebar">
+      <div class="tb-sidebar-inner">
+        <div class="tb-chap-num">CHAPTER<br/><span>${chapNum}</span></div>
+        <div class="tb-chap-title">${chapTitle.toUpperCase()}</div>
+      </div>
+    </div>` : '';
+
+  const colGap = cols > 1 ? 5 : 0; // mm
+  const sidebarW = sidebar ? 18 : 0; // mm
+  const contentW = pw - 2*margin - sidebarW;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>${chapTitle}</title>
+<style>
+/* ── Print/page setup ────────────────── */
+@page {
+  size: ${pw}mm ${ph}mm;
+  margin: ${margin}mm;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: ${pw}mm; background: #fff; font-size: 9pt; }
+body { font-family: 'Times New Roman', Times, serif; color: #111; line-height: 1.5; }
+
+/* ── Page wrapper ────────────────────── */
+.tb-page {
+  width: ${pw - 2*margin}mm;
+  min-height: ${ph - 2*margin}mm;
+  position: relative;
+  display: flex;
+  gap: 0;
+  page-break-after: always;
+}
+.tb-page:last-child { page-break-after: auto; }
+
+/* ── Sidebar ─────────────────────────── */
+.tb-sidebar {
+  width: ${sidebarW}mm;
+  flex-shrink: 0;
+  background: ${accentCol};
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tb-sidebar-inner {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  display: flex;
+  align-items: center;
+  gap: 8pt;
+  padding: 8pt 0;
+  width: 100%;
+}
+.tb-chap-num {
+  color: rgba(255,255,255,.7);
+  font-size: 6pt;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  text-align: center;
+  line-height: 1.2;
+  font-family: Arial, sans-serif;
+}
+.tb-chap-num span {
+  display: block;
+  font-size: 18pt;
+  font-weight: 900;
+  color: #fff;
+  line-height: 1;
+  margin-top: 2pt;
+}
+.tb-chap-title {
+  color: #fff;
+  font-size: 8pt;
+  font-weight: 900;
+  letter-spacing: .05em;
+  font-family: Arial, sans-serif;
+  text-align: center;
+}
+
+/* ── Content area ────────────────────── */
+.tb-content {
+  flex: 1;
+  padding-left: ${sidebar ? 5 : 0}mm;
+}
+.tb-columns {
+  column-count: ${cols};
+  column-gap: ${colGap}mm;
+  column-rule: .3pt solid #ddd;
+  orphans: 2;
+  widows: 2;
+}
+.tb-single {
+  width: 100%;
+}
+
+/* ── Footer ──────────────────────────── */
+.tb-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-top: 1pt solid #ccc;
+  padding-top: 4pt;
+  margin-top: 6pt;
+  font-size: 7pt;
+  color: #666;
+  font-family: Arial, sans-serif;
+}
+.tb-page-num { font-weight: 700; }
+
+/* ── Headings ────────────────────────── */
+h1, h2, h3, h4, h5, h6 { font-family: Arial, Helvetica, sans-serif; margin-bottom: 4pt; margin-top: 8pt; }
+h1, .idml-h1, .idml-chapter-title {
+  font-size: 13pt; font-weight: 900;
+  color: ${headCol};
+  text-transform: uppercase;
+  border-bottom: 1.5pt solid ${headCol};
+  padding-bottom: 2pt;
+  margin-bottom: 5pt;
+  column-span: all;
+}
+h2, .idml-h2, .idml-section-title {
+  font-size: 10pt; font-weight: 800;
+  color: ${headCol};
+  text-transform: uppercase;
+  margin-top: 7pt; margin-bottom: 3pt;
+  column-span: all;
+}
+h3, .idml-h3, .idml-subheading, .idml-subsection {
+  font-size: 9pt; font-weight: 700;
+  color: ${accentCol};
+  margin-top: 5pt; margin-bottom: 2pt;
+}
+h4, .idml-h4 { font-size: 8.5pt; font-weight: 700; color: ${accentCol}; margin-top: 4pt; }
+
+/* ── Chapter number ──────────────────── */
+.idml-chapter-number {
+  font-size: 7pt; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .15em;
+  color: ${headCol}; margin-bottom: 2pt;
+}
+
+/* ── Body ────────────────────────────── */
+p, .idml-body { font-size: 8.5pt; margin-bottom: 3pt; text-align: justify; }
+.idml-unstyled { font-size: 8pt; color: #444; }
+
+/* ── Lists ───────────────────────────── */
+ul, ol { padding-left: 12pt; margin-bottom: 4pt; }
+li, .idml-list-bullet, .idml-list-number, .idml-option { font-size: 8.5pt; margin-bottom: 2pt; }
+ol.idml-list { list-style-type: upper-alpha; }
+.idml-list-alpha { list-style-type: lower-roman; }
+
+/* ── Callouts ────────────────────────── */
+blockquote, .idml-callout, .idml-pullquote {
+  border-left: 2pt solid ${accentCol};
+  padding: 3pt 6pt; margin: 4pt 0;
+  font-style: italic; font-size: 8.5pt;
+  background: #f0f4ff;
+}
+.idml-note, .idml-tip, .idml-warning, .idml-advanced {
+  border-radius: 3pt; padding: 4pt 6pt;
+  margin: 4pt 0; font-size: 8pt;
+}
+.idml-note { background: #fffbeb; border-left: 2pt solid #f59e0b; }
+.idml-tip  { background: #f0fdf4; border-left: 2pt solid #22c55e; }
+.idml-warning { background: #fff0f0; border-left: 2pt solid #ef4444; }
+.idml-advanced { background: #faf5ff; border-left: 2pt solid #9333ea; }
+.idml-note::before { content: 'Note: '; font-weight: 700; }
+.idml-tip::before  { content: 'Tip: '; font-weight: 700; }
+.idml-warning::before { content: 'Warning: '; font-weight: 700; }
+.idml-advanced::before { content: 'Advanced: '; font-weight: 700; color:#9333ea; }
+
+/* ── Code ────────────────────────────── */
+pre, code, .idml-code {
+  font-family: 'Courier New', monospace;
+  font-size: 7.5pt; background: #f5f5f5;
+  border: .3pt solid #ddd; border-radius: 2pt;
+  padding: 2pt 4pt;
+}
+
+/* ── Figures ─────────────────────────── */
+figure { margin: 4pt 0; text-align: center; }
+figure img { max-width: 100%; height: auto; }
+figcaption, .idml-caption {
+  font-size: 7.5pt; color: #555;
+  font-style: italic; text-align: center; margin-top: 2pt;
+}
+img { max-width: 100%; height: auto; }
+
+/* ── Textbook specific ───────────────── */
+.idml-question { font-weight: 700; font-size: 8.5pt; margin-bottom: 2pt; }
+.idml-question-indent, .idml-indent { margin-left: 10pt; font-size: 8.5pt; }
+.idml-indent2 { margin-left: 20pt; font-size: 8pt; }
+.idml-solution { color: #1a5c2a; border-left: 2pt solid #22c55e; padding-left: 5pt; font-size: 8.5pt; }
+.idml-answer-key { background: #f0f9ff; border: .5pt solid #bae6fd; border-radius: 3pt; padding: 5pt; margin: 4pt 0; font-size: 8pt; }
+.idml-spacer { margin: 0; line-height: .3; }
+
+/* ── Print overrides ─────────────────── */
+@media print {
+  html, body { width: ${pw}mm; }
+  .tb-page { page-break-after: always; }
+  .tb-page:last-child { page-break-after: auto; }
+  .tb-sidebar { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  h1,h2,.idml-h1,.idml-h2 { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .idml-note,.idml-tip,.idml-warning,.idml-advanced,.idml-answer-key,.idml-solution {
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+}
+</style>
+</head>
+<body>
+${pages.map((pageBody, i) => {
+  const pageNum = i + 1;
+  return `
+<div class="tb-page">
+  ${sidebarHTML}
+  <div class="tb-content">
+    <div class="${cols > 1 ? 'tb-columns' : 'tb-single'}">
+      ${pageBody}
+    </div>
+    <div class="tb-footer">
+      <span>${pageNum}</span>
+      <span>${subject}</span>
+    </div>
+  </div>
+</div>`;
+}).join('\n')}
+</body>
+</html>`;
+}
+
+// ── Preview ──────────────────────────────────────
+$('btn-preview').addEventListener('click', () => {
+  if (!state.htmlFiles.length) {
+    setStatus('Add at least one HTML file first');
+    return;
+  }
+  setStatus('Building preview…');
+  const doc = buildDocument();
+  emptyState.style.display = 'none';
+  preview.style.display = '';
+  // (srcdoc used directly - no blob URL needed)
+  // srcdoc is the most reliable approach for local HTML - no blob URL, no CORS
+  preview._docHTML = doc;
+  preview.onload = () => {
+    setStatus(`Preview ready — ${state.htmlFiles.length} page(s)`);
+    $('btn-print').disabled = false;
+    pgInfo.textContent = `${state.htmlFiles.length} page(s)`;
+    applyZoom();
+  };
+  preview.srcdoc = doc;
+});
+
+// ── Print ────────────────────────────────────────
+$('btn-print').addEventListener('click', () => {
+  if (!preview._docHTML) return;
+  // Use blob URL — avoids document.write and popup-blocker issues
+  const blob = new Blob([preview._docHTML], {type:'text/html'});
+  const url  = URL.createObjectURL(blob);
+  const win  = window.open(url, '_blank');
+  if (!win) {
+    setStatus('Pop-up blocked — please allow pop-ups for this page, then try again.');
+    URL.revokeObjectURL(url);
+    return;
+  }
+  win.onload = () => {
+    win.focus();
+    setTimeout(() => {
+      win.print();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    }, 600);
+  };
+});
+
+// ── Zoom ─────────────────────────────────────────
+function applyZoom() {
+  if (!preview || preview.style.display === 'none') return;
+  const z = +($('zoom-select')?.value || 0.8);
+  const [pw, ph] = getPageDims();
+  // Convert mm to px (96dpi: 1mm ≈ 3.78px)
+  const pxW = pw * 3.78;
+  const frameH = ph * 3.78 * z + 60;
+  preview.style.width  = pxW + 'px';
+  preview.style.height = Math.max(600, frameH) + 'px';
+  preview.style.transform = `scale(${z})`;
+  preview.style.transformOrigin = 'top center';
+}
+$('zoom-select').addEventListener('change', applyZoom);
+
+// ── Clear ────────────────────────────────────────
+$('btn-clear').addEventListener('click', () => {
+  state.htmlFiles = [];
+  state.imgFiles  = {};
+  renderHTMLList();
+  renderImgList();
+  preview.style.display = 'none';
+  emptyState.style.display = '';
+  $('btn-print').disabled = true;
+  preview._docHTML = null;
+  pgInfo.textContent = '— / —';
+  setStatus('Cleared');
+});
+
+// ── Page nav (visual, scrolls preview) ──────────
+$('pg-prev').addEventListener('click', () => {
+  try { preview.contentWindow?.scrollBy(0, -preview.clientHeight * .9); } catch(e){}
+});
+$('pg-next').addEventListener('click', () => {
+  try { preview.contentWindow?.scrollBy(0, preview.clientHeight * .9); } catch(e){}
+});
+
+// ── Util ─────────────────────────────────────────
+function setStatus(msg) {
+  statusbar.textContent = msg;
+  $('tb-status').textContent = msg;
+}
+
+// Init — applyZoom only called after preview is shown
+</script>
+</body>
+</html>
