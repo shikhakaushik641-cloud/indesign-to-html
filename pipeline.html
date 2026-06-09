@@ -3786,6 +3786,140 @@ function buildPageLayoutHTML(parsed) {
   return pageNodes;
 }
 
+// ── Docling layout-accurate PDF→HTML companion script (bundled in ZIP) ──────
+const DOCLING_SCRIPT = `#!/usr/bin/env python3
+"""
+docling_convert.py  —  Convert a PDF to layout-accurate HTML using Docling.
+
+Docling (by IBM) uses ML models to reproduce the original PDF layout with
+accurate paragraph order, table structure, reading columns, and heading levels.
+
+REQUIREMENTS
+  pip install docling
+
+  On first run Docling downloads ~1 GB of ML model weights automatically.
+  Subsequent runs reuse the cached models (usually ~/.cache/docling/).
+
+USAGE
+  python scripts/docling_convert.py input.pdf
+  python scripts/docling_convert.py input.pdf --out output.html
+  python scripts/docling_convert.py input.pdf --out output.html --pages 1-5
+  python scripts/docling_convert.py input.pdf --out output.html --no-ocr
+
+OPTIONS
+  input.pdf          Path to the original PDF (required).
+  --out FILE         Output HTML path [default: docling_output.html]
+  --pages RANGE      Page range to convert, e.g. 1-5 or 3 [default: all]
+  --no-ocr           Disable OCR (faster; use when PDF has embedded text)
+  --no-tables        Skip table-structure analysis (faster)
+  --dpi N            Resolution for image rendering [default: 144]
+
+OUTPUT
+  A single self-contained HTML file (inline CSS, base64 images) that matches
+  the visual layout of the original PDF as closely as possible.
+"""
+
+import sys, argparse, pathlib, re
+
+def parse_args():
+    p = argparse.ArgumentParser(description='Convert PDF to layout-accurate HTML with Docling')
+    p.add_argument('input', help='Input PDF path')
+    p.add_argument('--out', default='docling_output.html', help='Output HTML file')
+    p.add_argument('--pages', default=None, help='Page range e.g. 1-5 or 3')
+    p.add_argument('--no-ocr', action='store_true', help='Disable OCR')
+    p.add_argument('--no-tables', action='store_true', help='Skip table structure')
+    p.add_argument('--dpi', type=int, default=144, help='Image DPI')
+    return p.parse_args()
+
+def parse_page_range(spec):
+    """Return (first_page, last_page) 0-based or None for all."""
+    if not spec:
+        return None
+    spec = spec.strip()
+    m = re.fullmatch(r'(\\d+)(?:-(\\d+))?', spec)
+    if not m:
+        raise ValueError(f'Invalid page range: {spec!r} — use e.g. 1-5 or 3')
+    a = int(m.group(1)) - 1  # convert to 0-based
+    b = int(m.group(2)) - 1 if m.group(2) else a
+    return (a, b)
+
+def main():
+    args = parse_args()
+    pdf_path = pathlib.Path(args.input)
+    if not pdf_path.exists():
+        sys.exit(f'ERROR: file not found: {pdf_path}')
+
+    try:
+        from docling.document_converter import DocumentConverter
+        from docling.datamodel.pipeline_options import PdfPipelineOptions
+        from docling.datamodel.base_models import InputFormat
+        from docling.document_converter import PdfFormatOption
+    except ImportError:
+        sys.exit('ERROR: docling is not installed.\\n  Run: pip install docling')
+
+    print(f'Converting {pdf_path} …')
+
+    pipeline_options = PdfPipelineOptions(
+        do_ocr=not args.no_ocr,
+        do_table_structure=not args.no_tables,
+        images_scale=args.dpi / 72.0,
+        generate_page_images=False,
+        generate_picture_images=True,
+    )
+
+    converter = DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+        }
+    )
+
+    page_range = parse_page_range(args.pages)
+    convert_kwargs = {}
+    if page_range is not None:
+        # Docling accepts page_ranges as list of (start, end) tuples (0-based inclusive)
+        convert_kwargs['page_range'] = [page_range]
+
+    result = converter.convert(str(pdf_path), **convert_kwargs)
+    doc = result.document
+
+    print('Exporting to HTML …')
+    try:
+        html = doc.export_to_html(image_mode='embedded')
+    except TypeError:
+        # Older Docling versions don't accept image_mode
+        html = doc.export_to_html()
+
+    # Inject a minimal stylesheet to improve readability
+    EXTRA_CSS = """
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 14px;
+         line-height: 1.6; max-width: 960px; margin: 0 auto; padding: 2em; color: #111; }
+  h1,h2,h3,h4,h5,h6 { font-weight: bold; margin: 1em 0 0.4em; }
+  h1 { font-size: 1.8em; } h2 { font-size: 1.4em; } h3 { font-size: 1.2em; }
+  p  { margin: 0.5em 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: left; }
+  th { background: #f0f0f0; font-weight: bold; }
+  img { max-width: 100%; height: auto; display: block; margin: 0.5em auto; }
+  figure { margin: 1em 0; text-align: center; }
+  figcaption { font-size: 0.85em; color: #555; margin-top: 4px; }
+  .page-break { border-top: 2px dashed #ccc; margin: 2em 0; }
+</style>
+"""
+    # Insert extra CSS right before </head>
+    if '</head>' in html:
+        html = html.replace('</head>', EXTRA_CSS + '</head>', 1)
+    else:
+        html = EXTRA_CSS + html
+
+    out_path = pathlib.Path(args.out)
+    out_path.write_text(html, encoding='utf-8')
+    print(f'Done! → {out_path} ({out_path.stat().st_size // 1024} KB)')
+
+if __name__ == '__main__':
+    main()
+\`;
+
 // ── Pillow companion script (bundled in ZIP) ─────────────────────────────────
 const PILLOW_SCRIPT = `#!/usr/bin/env python3
 """
@@ -4147,11 +4281,31 @@ async function buildIDMLZip(parsed,title) {
   zip.file('styles.css',usedCSS);
   zip.file('metadata.json',JSON.stringify(meta,null,2));
   zip.file('style-map.json',JSON.stringify({_note:"Edit paragraphStyles/characterStyles to improve mapping.",paragraphStyles:STYLE_MAP.paragraphStyles,characterStyles:STYLE_MAP.characterStyles,fallback:STYLE_MAP.fallback},null,2));
-  // Bundle Pillow image-embedding script
+  // Bundle companion scripts
   zip.folder('scripts').file('pillow_embed.py', PILLOW_SCRIPT);
+  zip.folder('scripts').file('docling_convert.py', DOCLING_SCRIPT);
   zip.folder('scripts').file('README.txt',
-    'pillow_embed.py — embed missing images into index.html using Pillow.\n\n' +
-    '══ MODE A: extract from PDF (recommended — no image files needed) ══\n\n' +
+    '═══════════════════════════════════════════════════════\n' +
+    ' InDesign→HTML Pipeline — companion scripts\n' +
+    '═══════════════════════════════════════════════════════\n\n' +
+    '┌─────────────────────────────────────────────────────┐\n' +
+    '│  docling_convert.py  (RECOMMENDED for layout match) │\n' +
+    '└─────────────────────────────────────────────────────┘\n' +
+    'Uses IBM Docling ML models to convert the original PDF\n' +
+    'to layout-accurate HTML that matches the PDF visually.\n\n' +
+    'Requirements:\n' +
+    '  pip install docling\n' +
+    '  (first run downloads ~1 GB of ML model weights)\n\n' +
+    'Usage:\n' +
+    '  python scripts/docling_convert.py original.pdf\n' +
+    '  python scripts/docling_convert.py original.pdf --out output.html\n' +
+    '  python scripts/docling_convert.py original.pdf --pages 1-5\n' +
+    '  python scripts/docling_convert.py original.pdf --no-ocr  (faster)\n\n' +
+    '┌─────────────────────────────────────────────────────┐\n' +
+    '│  pillow_embed.py  (for embedding images in IDML output) │\n' +
+    '└─────────────────────────────────────────────────────┘\n' +
+    'Embeds missing images into the IDML-converted index.html.\n\n' +
+    '══ MODE A: extract from PDF (recommended) ══\n\n' +
     'Requirements:\n' +
     '  pip install pillow beautifulsoup4 pdf2image\n' +
     '  # also install poppler:\n' +
@@ -4162,18 +4316,12 @@ async function buildIDMLZip(parsed,title) {
     'Usage:\n' +
     '  python scripts/pillow_embed.py index.html --pdf original.pdf\n' +
     '  python scripts/pillow_embed.py index.html --pdf original.pdf --dpi 200\n\n' +
-    'The script reads metadata.json for the exact InDesign page coordinates\n' +
-    'of every image frame, renders each PDF page at the requested DPI,\n' +
-    'crops the frame region, and embeds it as base64 directly in index.html.\n\n' +
     '══ MODE B: embed from images folder ══\n\n' +
     'Requirements:\n' +
     '  pip install pillow beautifulsoup4\n\n' +
     'Usage:\n' +
     '  python scripts/pillow_embed.py index.html\n' +
-    '  python scripts/pillow_embed.py index.html --images-dir /path/to/links\n\n' +
-    'Place the original linked image files in the images/ folder (or pass\n' +
-    '--images-dir). The script matches by filename, resizes to InDesign frame\n' +
-    'dimensions from metadata.json, and embeds as base64.\n'
+    '  python scripts/pillow_embed.py index.html --images-dir /path/to/links\n'
   );
 
   if(unmatched.length > 0){
