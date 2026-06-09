@@ -1,0 +1,1183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>HTML Editor</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Sans:wght@300;400;500;600;700&display=swap');
+:root{
+  --ink:#0d0d0d;--paper:#f7f5f0;--accent:#b5451b;--accent2:#d4622a;
+  --rule:#ccc8bf;--muted:#7a746c;--surface:#efece5;--raised:#fdfcf9;
+  --green:#1a7a3c;--err:#991b0f;--blue:#1a4fa0;
+  --fh:'Playfair Display','Georgia',serif;
+  --fu:'DM Sans','Helvetica Neue',sans-serif;
+  --fm:'Fira Code','Courier New',monospace;
+  --tb-h:44px; --cp-h:32px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;font-family:var(--fu);background:var(--paper);color:var(--ink)}
+
+/* ── TOOLBAR ── */
+#toolbar{
+  height:var(--tb-h);border-bottom:2px solid var(--ink);background:var(--raised);
+  display:flex;align-items:center;gap:2px;padding:0 .5rem;flex-shrink:0;flex-wrap:nowrap;overflow-x:auto;
+  position:relative;z-index:100;
+}
+.tb-sep{width:1px;height:20px;background:var(--rule);margin:0 3px;flex-shrink:0}
+.tb-label{font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);padding:0 .35rem;flex-shrink:0}
+.btn{
+  height:28px;padding:0 .55rem;border:1px solid transparent;border-radius:4px;
+  font-family:var(--fu);font-size:.75rem;font-weight:600;cursor:pointer;
+  background:none;color:var(--ink);white-space:nowrap;transition:all .12s;flex-shrink:0;
+}
+.btn:hover{background:var(--surface);border-color:var(--rule)}
+.btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn.primary{background:var(--ink);color:#fff}
+.btn.primary:hover{background:#2a2a2a}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+select.sel{
+  height:28px;padding:0 .4rem;border:1px solid var(--rule);border-radius:4px;
+  font-family:var(--fu);font-size:.75rem;background:var(--raised);color:var(--ink);
+  cursor:pointer;flex-shrink:0;
+}
+.color-btn{position:relative;overflow:hidden}
+.color-bar{position:absolute;bottom:0;left:0;right:0;height:3px}
+
+/* ── EQ BAR ── */
+#eqbar{
+  height:var(--cp-h);border-bottom:1px solid var(--rule);background:var(--surface);
+  display:none;align-items:center;gap:2px;padding:0 .5rem;flex-shrink:0;overflow-x:auto;
+}
+#eqbar.visible{display:flex}
+.eq-group{display:flex;align-items:center;gap:1px;flex-shrink:0}
+.eq-label{font-size:.55rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);padding:0 .3rem}
+.eq-btn{
+  height:24px;min-width:24px;padding:0 4px;border:1px solid var(--rule);border-radius:3px;
+  font-size:.8rem;cursor:pointer;background:var(--raised);color:var(--ink);transition:all .1s;
+}
+.eq-btn:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+/* ── LAYOUT ── */
+#layout{display:flex;height:calc(100vh - var(--tb-h));flex:1;overflow:hidden}
+#layout.with-eqbar{height:calc(100vh - var(--tb-h) - var(--cp-h))}
+
+.pane{display:flex;flex-direction:column;overflow:hidden;min-width:200px}
+#pane-editor{flex:1}
+#pane-pdf{flex:1}
+.pane-head{
+  height:30px;border-bottom:1px solid var(--rule);background:var(--surface);
+  display:flex;align-items:center;padding:0 .75rem;gap:.5rem;flex-shrink:0;
+}
+.pane-title{font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
+.pane-filename{font-size:.7rem;color:var(--ink);font-weight:600;margin-left:.25rem}
+.pane-body{flex:1;overflow:hidden;position:relative}
+
+/* splitter */
+#splitter{
+  width:5px;background:var(--rule);cursor:col-resize;flex-shrink:0;transition:background .15s;
+}
+#splitter:hover,#splitter.dragging{background:var(--accent)}
+
+/* ── EDITOR IFRAME ── */
+#editor-frame{
+  width:100%;height:100%;border:none;display:block;
+}
+.editor-empty{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  background:var(--surface);
+}
+.editor-empty-card{
+  text-align:center;padding:2rem;max-width:360px;
+}
+.editor-empty-icon{font-size:2.5rem;margin-bottom:1rem}
+.editor-empty-title{font-family:var(--fh);font-size:1.1rem;font-weight:700;margin-bottom:.5rem}
+.editor-empty-sub{font-size:.78rem;color:var(--muted);margin-bottom:1.25rem;line-height:1.6}
+.editor-empty-actions{display:flex;gap:.5rem;justify-content:center;flex-wrap:wrap}
+
+/* ── PDF PANE ── */
+#pdf-canvas-wrap{
+  width:100%;height:100%;overflow:auto;display:flex;flex-direction:column;align-items:center;
+  padding:1rem;gap:.5rem;background:#666;
+}
+#pdf-canvas{display:block;box-shadow:0 2px 12px rgba(0,0,0,.4)}
+.pdf-nav{display:flex;align-items:center;gap:.35rem;margin-left:auto}
+.pdf-nav input[type=number]{
+  width:40px;height:22px;text-align:center;border:1px solid var(--rule);border-radius:3px;
+  font-size:.75rem;font-family:var(--fu);background:var(--raised);
+}
+.pdf-nav span{font-size:.7rem;color:var(--muted)}
+.btn-xs{
+  height:22px;padding:0 .4rem;border:1px solid var(--rule);border-radius:3px;
+  font-size:.7rem;cursor:pointer;background:var(--raised);color:var(--ink);
+}
+.btn-xs:hover{background:var(--surface)}
+.pdf-empty{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  background:#555;
+}
+.pdf-empty-card{text-align:center;color:#eee;padding:2rem}
+.pdf-empty-icon{font-size:2rem;margin-bottom:.75rem}
+.pdf-empty-sub{font-size:.78rem;opacity:.7;margin-bottom:1rem}
+
+/* ── CODE PANEL ── */
+#code-panel{
+  border-top:2px solid var(--rule);height:200px;display:none;flex-direction:column;flex-shrink:0;
+}
+#code-panel.visible{display:flex}
+.code-head{
+  height:28px;border-bottom:1px solid var(--rule);background:var(--surface);
+  display:flex;align-items:center;padding:0 .75rem;gap:.5rem;flex-shrink:0;
+}
+.code-head-title{font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
+#code-mirror{
+  flex:1;border:none;outline:none;font-family:var(--fm);font-size:.75rem;
+  padding:.5rem .75rem;resize:none;background:var(--ink);color:#e2e8f0;
+  overflow:auto;
+}
+
+/* ── FLOATING TOOLBARS ── */
+.ftool{
+  position:fixed;display:none;align-items:center;gap:2px;padding:3px 5px;
+  background:var(--ink);border-radius:5px;box-shadow:0 3px 12px rgba(0,0,0,.3);
+  z-index:500;
+}
+.ftool.visible{display:flex}
+.ftool button{
+  height:22px;padding:0 .4rem;border:1px solid rgba(255,255,255,.15);border-radius:3px;
+  font-size:.68rem;cursor:pointer;background:rgba(255,255,255,.1);color:#fff;
+  white-space:nowrap;
+}
+.ftool button:hover{background:rgba(255,255,255,.25)}
+.ftool button.danger{color:#fca5a5}
+.ftool .ft-sep{width:1px;height:16px;background:rgba(255,255,255,.2);margin:0 2px}
+
+/* ── MODALS ── */
+.modal-backdrop{
+  position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:800;
+  display:none;align-items:center;justify-content:center;
+}
+.modal-backdrop.visible{display:flex}
+.modal{
+  background:var(--raised);border-radius:10px;padding:1.75rem;width:100%;max-width:440px;
+  box-shadow:0 8px 32px rgba(0,0,0,.2);
+}
+.modal h3{font-family:var(--fh);font-size:1.1rem;font-weight:700;margin-bottom:.5rem}
+.modal p{font-size:.8rem;color:var(--muted);margin-bottom:.75rem}
+.modal textarea{
+  width:100%;height:180px;border:1px solid var(--rule);border-radius:6px;padding:.6rem;
+  font-family:var(--fm);font-size:.72rem;resize:vertical;background:var(--surface);
+}
+.modal-actions{display:flex;justify-content:flex-end;gap:.5rem;margin-top:1rem}
+
+/* ── COLOR PICKER ── */
+#color-pop{
+  position:fixed;background:var(--raised);border:1px solid var(--rule);border-radius:8px;
+  padding:.75rem;width:200px;box-shadow:0 4px 16px rgba(0,0,0,.15);z-index:600;display:none;
+}
+#color-pop.visible{display:block}
+.cp-title{font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:.5rem}
+.cp-swatches{display:grid;grid-template-columns:repeat(8,1fr);gap:3px;margin-bottom:.5rem}
+.cp-swatch{
+  width:18px;height:18px;border-radius:3px;cursor:pointer;border:1px solid transparent;
+  transition:transform .1s;
+}
+.cp-swatch:hover{transform:scale(1.2);border-color:#999}
+.cp-row{display:flex;align-items:center;gap:.35rem;margin-bottom:.4rem}
+.cp-preview{width:22px;height:22px;border-radius:4px;border:1px solid var(--rule);flex-shrink:0}
+.cp-hex{
+  flex:1;height:24px;border:1px solid var(--rule);border-radius:4px;padding:0 .35rem;
+  font-family:var(--fm);font-size:.72rem;background:var(--surface);
+}
+.cp-more{
+  height:24px;width:24px;border:1px solid var(--rule);border-radius:4px;
+  cursor:pointer;background:var(--surface);font-size:.8rem;
+}
+.cp-actions{display:flex;gap:.3rem;margin-top:.5rem}
+.cp-actions button{
+  flex:1;height:24px;border:1px solid var(--rule);border-radius:4px;
+  font-size:.68rem;cursor:pointer;background:var(--surface);font-family:var(--fu);
+}
+.cp-apply{background:var(--ink)!important;color:#fff!important}
+
+/* ── TABLE GRID PICKER ── */
+#table-pop{
+  position:fixed;background:var(--raised);border:1px solid var(--rule);border-radius:8px;
+  padding:.75rem;z-index:600;display:none;box-shadow:0 4px 16px rgba(0,0,0,.15);
+}
+#table-pop.visible{display:block}
+.tg-grid{display:grid;grid-template-columns:repeat(8,20px);gap:2px;margin-bottom:.4rem}
+.tg-cell{
+  width:20px;height:20px;border:1px solid var(--rule);border-radius:2px;
+  cursor:pointer;transition:background .1s;background:var(--surface);
+}
+.tg-cell.hover{background:var(--accent);border-color:var(--accent)}
+.tg-foot{font-size:.68rem;color:var(--muted)}
+
+/* ── TOAST ── */
+#toast{
+  position:fixed;bottom:1.5rem;left:50%;transform:translateX(-50%) translateY(20px);
+  background:var(--ink);color:#fff;padding:.5rem 1rem;border-radius:6px;
+  font-size:.78rem;opacity:0;transition:all .25s;z-index:900;pointer-events:none;
+}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* ── IMG TOOLS ── */
+#img-tools{
+  position:fixed;background:var(--ink);border-radius:5px;padding:3px 5px;
+  display:none;gap:2px;z-index:500;align-items:center;
+}
+#img-tools.visible{display:flex}
+#img-tools button{
+  height:22px;padding:0 .4rem;border:1px solid rgba(255,255,255,.15);border-radius:3px;
+  font-size:.65rem;cursor:pointer;background:rgba(255,255,255,.1);color:#fff;
+}
+#img-tools button:hover{background:rgba(255,255,255,.25)}
+#img-tools button.danger{color:#fca5a5}
+</style>
+</head>
+<body>
+
+<!-- TOOLBAR -->
+<div id="toolbar">
+  <!-- File -->
+  <button class="btn" id="btn-open-html">📂 Open HTML</button>
+  <button class="btn" id="btn-paste-html">📋 Paste</button>
+  <button class="btn" id="btn-open-pdf">📕 Open PDF</button>
+  <span class="tb-sep"></span>
+  <button class="btn primary" id="btn-download" disabled>⬇ Download</button>
+  <button class="btn" id="btn-copy" disabled>⧉ Copy</button>
+  <span class="tb-sep"></span>
+  <!-- Undo/Redo -->
+  <button class="btn ed" data-cmd="undo" title="Undo (Ctrl+Z)" disabled>↶</button>
+  <button class="btn ed" data-cmd="redo" title="Redo (Ctrl+Y)" disabled>↷</button>
+  <span class="tb-sep"></span>
+  <!-- Format -->
+  <button class="btn ed" data-cmd="bold" title="Bold (Ctrl+B)" disabled><b>B</b></button>
+  <button class="btn ed" data-cmd="italic" title="Italic (Ctrl+I)" disabled><i>I</i></button>
+  <button class="btn ed" data-cmd="underline" title="Underline (Ctrl+U)" disabled><u>U</u></button>
+  <button class="btn ed" data-cmd="strikeThrough" disabled><s>S</s></button>
+  <span class="tb-sep"></span>
+  <!-- Color -->
+  <button class="btn ed color-btn" id="btn-color" title="Text colour" disabled>
+    A<span class="color-bar" id="bar-color" style="background:#111"></span>
+  </button>
+  <button class="btn ed color-btn" id="btn-highlight" title="Highlight" disabled>
+    ▰<span class="color-bar" id="bar-highlight" style="background:#ffff00"></span>
+  </button>
+  <button class="btn ed" id="btn-paint" title="Format painter" disabled>🖌</button>
+  <span class="tb-sep"></span>
+  <!-- Style selects -->
+  <select class="sel ed" id="sel-block" disabled>
+    <option value="P">Normal</option>
+    <option value="H1">Heading 1</option>
+    <option value="H2">Heading 2</option>
+    <option value="H3">Heading 3</option>
+    <option value="H4">Heading 4</option>
+    <option value="BLOCKQUOTE">Quote</option>
+  </select>
+  <select class="sel ed" id="sel-size" disabled>
+    <option value="">Size</option>
+    <option value="11px">11</option><option value="12px">12</option>
+    <option value="14px">14</option><option value="16px">16</option>
+    <option value="18px">18</option><option value="20px">20</option>
+    <option value="24px">24</option><option value="28px">28</option>
+    <option value="32px">32</option><option value="40px">40</option>
+  </select>
+  <select class="sel ed" id="sel-font" disabled>
+    <option value="">Font</option>
+    <option value='"Times New Roman",serif'>Times</option>
+    <option value="Arial,sans-serif">Arial</option>
+    <option value="Georgia,serif">Georgia</option>
+    <option value='"Courier New",monospace'>Courier</option>
+    <option value="Verdana,sans-serif">Verdana</option>
+  </select>
+  <select class="sel ed" id="sel-spacing" disabled>
+    <option value="">Spacing</option>
+    <option value="1">1.0</option><option value="1.15">1.15</option>
+    <option value="1.5">1.5</option><option value="1.75">1.75</option>
+    <option value="2">2.0</option>
+  </select>
+  <span class="tb-sep"></span>
+  <!-- Align -->
+  <button class="btn ed" data-cmd="justifyLeft" disabled>⬅</button>
+  <button class="btn ed" data-cmd="justifyCenter" disabled>↔</button>
+  <button class="btn ed" data-cmd="justifyRight" disabled>➡</button>
+  <button class="btn ed" data-cmd="justifyFull" disabled>▦</button>
+  <span class="tb-sep"></span>
+  <!-- Lists -->
+  <button class="btn ed" data-cmd="insertUnorderedList" disabled>• ☰</button>
+  <button class="btn ed" data-cmd="insertOrderedList" disabled>1. ☰</button>
+  <span class="tb-sep"></span>
+  <!-- Special -->
+  <button class="btn ed" id="btn-eq" disabled>∑ Eqn</button>
+  <button class="btn ed" id="btn-table" disabled>⊞ Table</button>
+  <button class="btn ed" id="btn-image" disabled>🖼 Image</button>
+  <button class="btn ed" id="btn-link" disabled>🔗 Link</button>
+  <button class="btn ed" data-cmd="removeFormat" disabled>⌫ Clear</button>
+  <span class="tb-sep"></span>
+  <button class="btn" id="btn-code">&lt;/&gt; Code</button>
+</div>
+
+<!-- EQUATION BAR -->
+<div id="eqbar">
+  <div class="eq-group">
+    <span class="eq-label">Struct</span>
+    <button class="eq-btn" data-struct="frac" title="Fraction">a/b</button>
+    <button class="eq-btn" data-struct="sup" title="Superscript">x²</button>
+    <button class="eq-btn" data-struct="sub" title="Subscript">x₂</button>
+    <button class="eq-btn" data-struct="sqrt" title="Square root">√</button>
+    <button class="eq-btn" data-struct="vec" title="Vector">→v</button>
+    <button class="eq-btn" data-struct="ovl" title="Overline">x̄</button>
+    <button class="eq-btn" data-struct="int" title="Integral">∫</button>
+    <button class="eq-btn" data-struct="sum" title="Summation">Σ</button>
+  </div>
+  <span class="tb-sep"></span>
+  <div class="eq-group">
+    <span class="eq-label">Ops</span>
+    <button class="eq-btn" data-ins="×">×</button><button class="eq-btn" data-ins="÷">÷</button>
+    <button class="eq-btn" data-ins="±">±</button><button class="eq-btn" data-ins="≠">≠</button>
+    <button class="eq-btn" data-ins="≤">≤</button><button class="eq-btn" data-ins="≥">≥</button>
+    <button class="eq-btn" data-ins="≈">≈</button><button class="eq-btn" data-ins="∝">∝</button>
+    <button class="eq-btn" data-ins="→">→</button><button class="eq-btn" data-ins="∞">∞</button>
+    <button class="eq-btn" data-ins="∂">∂</button><button class="eq-btn" data-ins="∴">∴</button>
+    <button class="eq-btn" data-ins="°">°</button><button class="eq-btn" data-ins="′">′</button>
+  </div>
+  <span class="tb-sep"></span>
+  <div class="eq-group">
+    <span class="eq-label">Greek</span>
+    <button class="eq-btn" data-ins="α">α</button><button class="eq-btn" data-ins="β">β</button>
+    <button class="eq-btn" data-ins="γ">γ</button><button class="eq-btn" data-ins="δ">δ</button>
+    <button class="eq-btn" data-ins="θ">θ</button><button class="eq-btn" data-ins="λ">λ</button>
+    <button class="eq-btn" data-ins="μ">μ</button><button class="eq-btn" data-ins="π">π</button>
+    <button class="eq-btn" data-ins="σ">σ</button><button class="eq-btn" data-ins="φ">φ</button>
+    <button class="eq-btn" data-ins="ω">ω</button><button class="eq-btn" data-ins="Δ">Δ</button>
+    <button class="eq-btn" data-ins="Σ">Σ</button><button class="eq-btn" data-ins="Ω">Ω</button>
+  </div>
+  <button class="btn" style="margin-left:auto;font-size:.65rem" id="btn-eq-close">✕ Close</button>
+</div>
+
+<!-- WORKSPACE -->
+<div id="layout">
+  <div class="pane" id="pane-editor">
+    <div class="pane-head">
+      <span class="pane-title">📝 Editor</span>
+      <span class="pane-filename" id="editor-filename"></span>
+      <span id="dirty-dot" style="display:none;color:var(--accent);margin-left:.25rem" title="Unsaved changes">●</span>
+    </div>
+    <div class="pane-body" id="editor-body">
+      <iframe id="editor-frame" title="Editable HTML"></iframe>
+      <div class="editor-empty" id="editor-empty">
+        <div class="editor-empty-card">
+          <div class="editor-empty-icon">📝</div>
+          <div class="editor-empty-title">Open converted HTML to edit</div>
+          <div class="editor-empty-sub">Load the HTML file produced by the IDML or PDF converter. Edit text, images, equations and tables directly in the preview.</div>
+          <div class="editor-empty-actions">
+            <button class="btn primary" id="empty-open">📂 Open HTML file</button>
+            <button class="btn" id="empty-paste">📋 Paste code</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="splitter"></div>
+
+  <div class="pane" id="pane-pdf">
+    <div class="pane-head">
+      <span class="pane-title">📕 Reference PDF</span>
+      <div class="pdf-nav" id="pdf-nav" style="display:none">
+        <button class="btn-xs" id="pdf-prev">‹</button>
+        <input type="number" id="pdf-page-input" min="1" value="1"/>
+        <span>/ <span id="pdf-total">0</span></span>
+        <button class="btn-xs" id="pdf-next">›</button>
+        <span class="tb-sep"></span>
+        <button class="btn-xs" id="pdf-zoom-out">−</button>
+        <span id="pdf-zoom-label" style="font-size:.7rem;min-width:36px;text-align:center">100%</span>
+        <button class="btn-xs" id="pdf-zoom-in">+</button>
+        <button class="btn-xs" id="pdf-fit">↦ Fit</button>
+      </div>
+    </div>
+    <div class="pane-body" id="pdf-body">
+      <div id="pdf-canvas-wrap" style="display:none">
+        <canvas id="pdf-canvas"></canvas>
+      </div>
+      <div class="pdf-empty" id="pdf-empty">
+        <div class="pdf-empty-card">
+          <div class="pdf-empty-icon">📕</div>
+          <p>Open PDF to compare side-by-side</p>
+          <div class="pdf-empty-sub">Drag a .pdf here or click below</div>
+          <button class="btn primary" id="empty-open-pdf">📕 Open PDF</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- CODE PANEL -->
+<div id="code-panel">
+  <div class="code-head">
+    <span class="code-head-title">&lt;/&gt; HTML code (live · read-only)</span>
+    <button class="btn-xs" id="code-copy" style="margin-left:auto">⧉ Copy</button>
+    <button class="btn-xs" id="code-close">✕</button>
+  </div>
+  <textarea id="code-mirror" readonly spellcheck="false"></textarea>
+</div>
+
+<!-- PASTE MODAL -->
+<div class="modal-backdrop" id="paste-modal">
+  <div class="modal">
+    <h3>Paste HTML code</h3>
+    <p>Paste the converter output HTML below, then click Load.</p>
+    <textarea id="paste-textarea" spellcheck="false" placeholder="<!DOCTYPE html>…"></textarea>
+    <div class="modal-actions">
+      <button class="btn" id="paste-cancel">Cancel</button>
+      <button class="btn primary" id="paste-load">Load</button>
+    </div>
+  </div>
+</div>
+
+<!-- COLOR PICKER -->
+<div id="color-pop">
+  <div class="cp-title" id="cp-title">Text colour</div>
+  <div class="cp-swatches" id="cp-swatches"></div>
+  <div class="cp-row">
+    <span class="cp-preview" id="cp-preview"></span>
+    <input type="text" class="cp-hex" id="cp-hex" maxlength="7" value="#111111"/>
+    <button class="cp-more" id="cp-native-btn" title="Full picker">🎨</button>
+  </div>
+  <div class="cp-actions">
+    <button id="cp-remove">Remove</button>
+    <button id="cp-close">Close</button>
+    <button class="cp-apply" id="cp-apply">Apply</button>
+  </div>
+  <input type="color" id="cp-native" style="display:none"/>
+</div>
+
+<!-- TABLE GRID PICKER -->
+<div id="table-pop">
+  <div style="font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:.4rem">Insert table</div>
+  <div class="tg-grid" id="tg-grid"></div>
+  <div class="tg-foot" id="tg-label">Click to insert</div>
+</div>
+
+<!-- FLOATING TABLE TOOLBAR -->
+<div class="ftool" id="table-tools">
+  <button data-tbl="rowAbove">↥ Row</button>
+  <button data-tbl="rowBelow">↧ Row</button>
+  <button data-tbl="colLeft">↤ Col</button>
+  <button data-tbl="colRight">Col ↦</button>
+  <span class="ft-sep"></span>
+  <button data-tbl="delRow" class="danger">✕ Row</button>
+  <button data-tbl="delCol" class="danger">✕ Col</button>
+  <button data-tbl="delTable" class="danger">🗑 Table</button>
+</div>
+
+<!-- FLOATING IMAGE TOOLBAR -->
+<div id="img-tools">
+  <button data-w="25%">25%</button>
+  <button data-w="50%">50%</button>
+  <button data-w="75%">75%</button>
+  <button data-w="100%">100%</button>
+  <button data-w="auto">Auto</button>
+  <button id="img-del" class="danger">🗑</button>
+</div>
+
+<!-- TOAST -->
+<div id="toast"></div>
+
+<!-- HIDDEN INPUTS -->
+<input type="file" id="file-html" accept=".html,.htm" style="display:none"/>
+<input type="file" id="file-pdf" accept=".pdf" style="display:none"/>
+<input type="file" id="file-image" accept="image/*" style="display:none"/>
+
+<!-- PDF.js via CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+<script>
+'use strict';
+
+// ── GLOBALS ──────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+let editorDoc = null;       // iframe document
+let editorLoaded = false;
+let currentFilename = '';
+let isDirty = false;
+let paintMode = false;
+let paintedStyle = null;
+let colorTarget = null;     // 'text' | 'highlight'
+let currentColor = '#111111';
+let currentHighlight = '#ffff00';
+let pdfDoc = null;
+let pdfPage = 1;
+let pdfScale = 1.2;
+
+// ── PDF.js worker ─────────────────────────────────────────────────────────
+if(typeof pdfjsLib !== 'undefined'){
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+
+// ── EDITOR LOAD ──────────────────────────────────────────────────────────
+function loadHTML(html, filename){
+  currentFilename = filename || 'document.html';
+  $('editor-filename').textContent = currentFilename;
+  $('editor-empty').style.display = 'none';
+
+  const frame = $('editor-frame');
+  frame.srcdoc = html;
+  frame.onload = () => {
+    editorDoc = frame.contentDocument;
+    editorDoc.body.contentEditable = 'true';
+    editorDoc.designMode = 'off';
+    editorDoc.execCommand('styleWithCSS', false, true);
+    editorDoc.execCommand('defaultParagraphSeparator', false, 'p');
+    editorLoaded = true;
+    enableEditorControls(true);
+    restoreAutosave_check();
+    setupEditorListeners();
+    syncCode();
+    markDirty(false);
+  };
+}
+
+function setupEditorListeners(){
+  editorDoc.addEventListener('input', () => { syncCode(); markDirty(true); updateToolbarState(); });
+  editorDoc.addEventListener('keyup', updateToolbarState);
+  editorDoc.addEventListener('mouseup', () => { updateToolbarState(); handleImgClick(); handleTableClick(); });
+  editorDoc.addEventListener('selectionchange', updateToolbarState);
+
+  // Image paste
+  editorDoc.addEventListener('paste', e => {
+    const items = e.clipboardData?.items;
+    if(!items) return;
+    for(const item of items){
+      if(item.type.startsWith('image/')){
+        e.preventDefault();
+        const file = item.getAsFile();
+        fileToBase64(file).then(b64 => insertImageB64(b64, file.type));
+        return;
+      }
+    }
+  });
+
+  // Image drag-drop
+  editorDoc.addEventListener('dragover', e => e.preventDefault());
+  editorDoc.addEventListener('drop', e => {
+    const file = e.dataTransfer?.files?.[0];
+    if(file && file.type.startsWith('image/')){
+      e.preventDefault();
+      fileToBase64(file).then(b64 => insertImageB64(b64, file.type));
+    }
+  });
+}
+
+// ── ENABLE / DISABLE CONTROLS ────────────────────────────────────────────
+function enableEditorControls(on){
+  document.querySelectorAll('.ed').forEach(el => {
+    if(on) el.removeAttribute('disabled');
+    else el.setAttribute('disabled','');
+  });
+  $('btn-download').disabled = !on;
+  $('btn-copy').disabled = !on;
+}
+
+// ── TOOLBAR STATE ─────────────────────────────────────────────────────────
+function updateToolbarState(){
+  if(!editorLoaded || !editorDoc) return;
+  const cmds = ['bold','italic','underline','strikeThrough','justifyLeft','justifyCenter','justifyRight','justifyFull','insertUnorderedList','insertOrderedList'];
+  cmds.forEach(cmd => {
+    const btn = document.querySelector(`[data-cmd="${cmd}"]`);
+    if(btn) btn.classList.toggle('active', editorDoc.queryCommandState(cmd));
+  });
+}
+
+// ── EXEC COMMAND ─────────────────────────────────────────────────────────
+document.querySelectorAll('[data-cmd]').forEach(btn => {
+  btn.addEventListener('mousedown', e => {
+    e.preventDefault();
+    if(!editorLoaded) return;
+    editorDoc.execCommand(btn.dataset.cmd, false, null);
+    syncCode(); markDirty(true);
+  });
+});
+
+// Block style
+$('sel-block').addEventListener('change', e => {
+  if(!editorLoaded) return;
+  editorDoc.execCommand('formatBlock', false, e.target.value);
+  syncCode(); markDirty(true);
+});
+
+// Font size
+$('sel-size').addEventListener('change', e => {
+  if(!editorLoaded || !e.target.value) return;
+  applyStyleToSelection('fontSize', e.target.value);
+  syncCode(); markDirty(true);
+});
+
+// Font family
+$('sel-font').addEventListener('change', e => {
+  if(!editorLoaded || !e.target.value) return;
+  editorDoc.execCommand('fontName', false, e.target.value);
+  syncCode(); markDirty(true);
+});
+
+// Line spacing
+$('sel-spacing').addEventListener('change', e => {
+  if(!editorLoaded || !e.target.value) return;
+  applyStyleToSelection('lineHeight', e.target.value);
+  syncCode(); markDirty(true);
+});
+
+function applyStyleToSelection(prop, val){
+  const sel = editorDoc.getSelection();
+  if(!sel.rangeCount) return;
+  const range = sel.getRangeAt(0);
+  if(range.collapsed){
+    // Apply to containing block
+    const el = sel.anchorNode?.parentElement;
+    if(el) el.style[prop] = val;
+  } else {
+    const span = editorDoc.createElement('span');
+    span.style[prop] = val;
+    try { range.surroundContents(span); } catch(e) {
+      editorDoc.execCommand('insertHTML', false, `<span style="${prop}:${val}">${range.toString()}</span>`);
+    }
+  }
+}
+
+// ── COLOR ────────────────────────────────────────────────────────────────
+const SWATCHES = ['#000000','#ffffff','#ef4444','#f97316','#eab308','#22c55e','#3b82f6','#8b5cf6',
+                  '#111111','#f5f5f0','#b91c1c','#c2410c','#a16207','#15803d','#1d4ed8','#7c3aed',
+                  '#374151','#e5e7eb','#fca5a5','#fdba74','#fde047','#86efac','#93c5fd','#c4b5fd'];
+
+function initColorPicker(){
+  const grid = $('cp-swatches');
+  grid.innerHTML = '';
+  SWATCHES.forEach(c => {
+    const s = document.createElement('div');
+    s.className = 'cp-swatch'; s.style.background = c;
+    s.addEventListener('click', () => { $('cp-hex').value = c; updateCpPreview(); });
+    grid.appendChild(s);
+  });
+}
+
+function updateCpPreview(){
+  const hex = $('cp-hex').value;
+  $('cp-preview').style.background = hex;
+}
+
+$('btn-color').addEventListener('click', e => { openColorPop('text', e); });
+$('btn-highlight').addEventListener('click', e => { openColorPop('highlight', e); });
+
+function openColorPop(target, e){
+  if(!editorLoaded) return;
+  colorTarget = target;
+  $('cp-title').textContent = target === 'text' ? 'Text colour' : 'Highlight colour';
+  $('cp-hex').value = target === 'text' ? currentColor : currentHighlight;
+  updateCpPreview();
+  const pop = $('color-pop');
+  pop.classList.add('visible');
+  const r = e.target.getBoundingClientRect();
+  pop.style.top = (r.bottom + 4) + 'px';
+  pop.style.left = Math.min(r.left, window.innerWidth - 210) + 'px';
+}
+
+$('cp-apply').addEventListener('click', () => {
+  const hex = $('cp-hex').value;
+  if(!editorLoaded) return;
+  if(colorTarget === 'text'){
+    currentColor = hex;
+    $('bar-color').style.background = hex;
+    editorDoc.execCommand('foreColor', false, hex);
+  } else {
+    currentHighlight = hex;
+    $('bar-highlight').style.background = hex;
+    editorDoc.execCommand('hiliteColor', false, hex);
+  }
+  $('color-pop').classList.remove('visible');
+  syncCode(); markDirty(true);
+});
+
+$('cp-remove').addEventListener('click', () => {
+  if(!editorLoaded) return;
+  if(colorTarget === 'text') editorDoc.execCommand('foreColor', false, 'inherit');
+  else editorDoc.execCommand('hiliteColor', false, 'transparent');
+  $('color-pop').classList.remove('visible');
+  syncCode(); markDirty(true);
+});
+
+$('cp-close').addEventListener('click', () => $('color-pop').classList.remove('visible'));
+$('cp-hex').addEventListener('input', updateCpPreview);
+$('cp-native-btn').addEventListener('click', () => $('cp-native').click());
+$('cp-native').addEventListener('input', e => { $('cp-hex').value = e.target.value; updateCpPreview(); });
+
+// ── FORMAT PAINTER ────────────────────────────────────────────────────────
+$('btn-paint').addEventListener('click', () => {
+  if(!editorLoaded) return;
+  if(!paintMode){
+    const sel = editorDoc.getSelection();
+    if(!sel.rangeCount || sel.isCollapsed){ toast('Select source text first'); return; }
+    const el = sel.anchorNode?.parentElement;
+    paintedStyle = el ? el.getAttribute('style') : null;
+    paintMode = true;
+    $('btn-paint').classList.add('active');
+    toast('Now select target text and click 🖌 again');
+  } else {
+    const sel = editorDoc.getSelection();
+    if(sel.rangeCount && !sel.isCollapsed && paintedStyle){
+      const span = editorDoc.createElement('span');
+      span.setAttribute('style', paintedStyle);
+      try {
+        sel.getRangeAt(0).surroundContents(span);
+        syncCode(); markDirty(true);
+      } catch(e){}
+    }
+    paintMode = false;
+    $('btn-paint').classList.remove('active');
+    paintedStyle = null;
+  }
+});
+
+// ── EQUATION PANEL ────────────────────────────────────────────────────────
+$('btn-eq').addEventListener('click', () => {
+  const bar = $('eqbar');
+  const on = bar.classList.toggle('visible');
+  $('btn-eq').classList.toggle('active', on);
+  $('layout').classList.toggle('with-eqbar', on);
+});
+$('btn-eq-close').addEventListener('click', () => {
+  $('eqbar').classList.remove('visible');
+  $('btn-eq').classList.remove('active');
+  $('layout').classList.remove('with-eqbar');
+});
+
+// Equation structures
+const EQ_STRUCTS = {
+  frac: `<span class="frac" style="display:inline-block;text-align:center;vertical-align:middle;font-size:.9em"><span style="display:block;border-bottom:1px solid currentColor;padding:0 .2em">□</span><span style="display:block;padding:0 .2em">□</span></span>`,
+  sup:  `□<sup style="font-size:.7em">□</sup>`,
+  sub:  `□<sub style="font-size:.7em">□</sub>`,
+  sqrt: `<span style="display:inline-block;vertical-align:middle"><span style="font-size:1.2em">√</span><span style="border-top:1px solid currentColor;padding:0 .15em">□</span></span>`,
+  vec:  `<span style="display:inline-block;text-align:center"><span style="display:block;font-size:.6em;line-height:1">→</span><span>□</span></span>`,
+  ovl:  `<span style="border-top:1px solid currentColor;display:inline-block;padding:0 .1em">□</span>`,
+  int:  `<span style="font-size:1.4em">∫</span><sub>□</sub><sup>□</sup>`,
+  sum:  `<span style="font-size:1.3em">Σ</span><sub>□</sub><sup>□</sup>`,
+};
+
+document.querySelectorAll('[data-struct]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if(!editorLoaded) return;
+    const html = EQ_STRUCTS[btn.dataset.struct];
+    if(html){ editorDoc.execCommand('insertHTML', false, html); syncCode(); markDirty(true); }
+  });
+});
+
+document.querySelectorAll('[data-ins]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if(!editorLoaded) return;
+    editorDoc.execCommand('insertText', false, btn.dataset.ins);
+    syncCode(); markDirty(true);
+  });
+});
+
+// ── TABLE ─────────────────────────────────────────────────────────────────
+let tgHover = {r:0,c:0};
+function buildTableGrid(){
+  const grid = $('tg-grid');
+  grid.innerHTML = '';
+  for(let r=0;r<8;r++) for(let c=0;c<8;c++){
+    const cell = document.createElement('div');
+    cell.className = 'tg-cell';
+    cell.dataset.r = r; cell.dataset.c = c;
+    cell.addEventListener('mouseenter', () => {
+      tgHover = {r,c};
+      document.querySelectorAll('.tg-cell').forEach(tc => {
+        tc.classList.toggle('hover', +tc.dataset.r<=r && +tc.dataset.c<=c);
+      });
+      $('tg-label').textContent = `${r+1} × ${c+1}`;
+    });
+    cell.addEventListener('click', () => { insertTable(r+1,c+1); $('table-pop').classList.remove('visible'); });
+    grid.appendChild(cell);
+  }
+}
+
+function insertTable(rows, cols){
+  if(!editorLoaded) return;
+  let html = '<table style="border-collapse:collapse;width:100%;margin:1em 0"><tbody>';
+  for(let r=0;r<rows;r++){
+    html += '<tr>';
+    for(let c=0;c<cols;c++){
+      const tag = r===0 ? 'th' : 'td';
+      html += `<${tag} style="border:1px solid #ccc;padding:.4em .6em;min-width:60px">&nbsp;</${tag}>`;
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table><p><br></p>';
+  editorDoc.execCommand('insertHTML', false, html);
+  syncCode(); markDirty(true);
+}
+
+$('btn-table').addEventListener('click', e => {
+  const pop = $('table-pop');
+  pop.classList.toggle('visible');
+  const r = e.target.getBoundingClientRect();
+  pop.style.top = (r.bottom+4)+'px';
+  pop.style.left = r.left+'px';
+});
+
+// Floating table toolbar
+function handleTableClick(){
+  if(!editorLoaded) return;
+  const sel = editorDoc.getSelection();
+  if(!sel.rangeCount) return;
+  let node = sel.anchorNode;
+  let td = null;
+  while(node && node !== editorDoc.body){
+    if(node.nodeName === 'TD' || node.nodeName === 'TH'){ td = node; break; }
+    node = node.parentNode;
+  }
+  const tt = $('table-tools');
+  if(!td){ tt.classList.remove('visible'); return; }
+  const fr = $('editor-frame').getBoundingClientRect();
+  const tr = td.getBoundingClientRect();
+  tt.classList.add('visible');
+  tt.style.top  = (fr.top + tr.bottom + 4) + 'px';
+  tt.style.left = (fr.left + tr.left) + 'px';
+  tt._td = td;
+}
+
+$('table-tools').querySelectorAll('[data-tbl]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const td = $('table-tools')._td;
+    if(!td) return;
+    const tr = td.parentNode;
+    const table = tr.closest('table');
+    const action = btn.dataset.tbl;
+    if(action==='rowAbove'){ const newTr = tr.cloneNode(true); newTr.querySelectorAll('td,th').forEach(c=>c.innerHTML='&nbsp;'); tr.parentNode.insertBefore(newTr,tr); }
+    if(action==='rowBelow'){ const newTr = tr.cloneNode(true); newTr.querySelectorAll('td,th').forEach(c=>c.innerHTML='&nbsp;'); tr.parentNode.insertBefore(newTr,tr.nextSibling); }
+    if(action==='colLeft'||action==='colRight'){
+      const idx = Array.from(tr.children).indexOf(td);
+      table.querySelectorAll('tr').forEach(row=>{
+        const ref = row.children[idx];
+        const newTd = editorDoc.createElement(ref?.tagName||'td');
+        newTd.style.cssText = 'border:1px solid #ccc;padding:.4em .6em;min-width:60px';
+        newTd.innerHTML = '&nbsp;';
+        if(action==='colLeft') row.insertBefore(newTd, ref);
+        else row.insertBefore(newTd, ref?.nextSibling||null);
+      });
+    }
+    if(action==='delRow'){ if(table.querySelectorAll('tr').length>1) tr.remove(); }
+    if(action==='delCol'){
+      const idx = Array.from(tr.children).indexOf(td);
+      if(tr.children.length>1) table.querySelectorAll('tr').forEach(row=>{ if(row.children[idx]) row.children[idx].remove(); });
+    }
+    if(action==='delTable'){ table.remove(); $('table-tools').classList.remove('visible'); }
+    syncCode(); markDirty(true);
+  });
+});
+
+// ── IMAGES ────────────────────────────────────────────────────────────────
+$('btn-image').addEventListener('click', () => { if(editorLoaded) $('file-image').click(); });
+$('file-image').addEventListener('change', e => {
+  const f = e.target.files[0]; if(!f) return;
+  fileToBase64(f).then(b64 => insertImageB64(b64, f.type));
+  e.target.value = '';
+});
+
+function insertImageB64(b64, mime){
+  const src = `data:${mime};base64,${b64}`;
+  editorDoc.execCommand('insertHTML', false, `<img src="${src}" style="max-width:100%;height:auto;display:block;margin:1em auto" alt="image"/>`);
+  syncCode(); markDirty(true);
+}
+
+function fileToBase64(file){
+  return new Promise(res => {
+    const r = new FileReader(); r.onload = e => res(e.target.result.split(',')[1]); r.readAsDataURL(file);
+  });
+}
+
+// Floating image toolbar
+function handleImgClick(){
+  if(!editorLoaded) return;
+  const sel = editorDoc.getSelection();
+  let img = null;
+  if(sel.rangeCount){
+    const n = sel.anchorNode;
+    if(n.nodeName==='IMG') img = n;
+    else if(n.parentNode?.nodeName==='IMG') img = n.parentNode;
+  }
+  // Also check last clicked element
+  const it = $('img-tools');
+  if(!img){ it.classList.remove('visible'); it._img = null; return; }
+  const fr = $('editor-frame').getBoundingClientRect();
+  const ir = img.getBoundingClientRect();
+  it.classList.add('visible');
+  it.style.top  = (fr.top + ir.top - 30) + 'px';
+  it.style.left = (fr.left + ir.left) + 'px';
+  it._img = img;
+}
+
+$('img-tools').querySelectorAll('[data-w]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const img = $('img-tools')._img;
+    if(img){ img.style.width = btn.dataset.w; img.style.maxWidth='100%'; syncCode(); markDirty(true); }
+  });
+});
+$('img-del').addEventListener('click', () => {
+  const img = $('img-tools')._img;
+  if(img){ img.remove(); $('img-tools').classList.remove('visible'); syncCode(); markDirty(true); }
+});
+
+// also trigger on click inside iframe
+$('editor-frame').addEventListener('load', () => {
+  if(!editorDoc) return;
+  editorDoc.addEventListener('click', e => {
+    if(e.target.tagName === 'IMG'){
+      $('img-tools')._img = e.target;
+      const fr = $('editor-frame').getBoundingClientRect();
+      const ir = e.target.getBoundingClientRect();
+      $('img-tools').style.top  = (fr.top + ir.top - 30) + 'px';
+      $('img-tools').style.left = (fr.left + ir.left) + 'px';
+      $('img-tools').classList.add('visible');
+    } else {
+      $('img-tools').classList.remove('visible');
+    }
+  });
+});
+
+// ── LINK ─────────────────────────────────────────────────────────────────
+$('btn-link').addEventListener('click', () => {
+  if(!editorLoaded) return;
+  const url = prompt('Enter URL:', 'https://');
+  if(url) { editorDoc.execCommand('createLink', false, url); syncCode(); markDirty(true); }
+});
+
+// ── FILE LOADING ──────────────────────────────────────────────────────────
+$('btn-open-html').addEventListener('click', () => $('file-html').click());
+$('empty-open').addEventListener('click', () => $('file-html').click());
+$('file-html').addEventListener('change', e => {
+  const f = e.target.files[0]; if(!f) return;
+  const r = new FileReader();
+  r.onload = ev => loadHTML(ev.target.result, f.name);
+  r.readAsText(f);
+  e.target.value = '';
+});
+
+$('btn-paste-html').addEventListener('click', () => $('paste-modal').classList.add('visible'));
+$('empty-paste').addEventListener('click', () => $('paste-modal').classList.add('visible'));
+$('paste-cancel').addEventListener('click', () => $('paste-modal').classList.remove('visible'));
+$('paste-load').addEventListener('click', () => {
+  const html = $('paste-textarea').value.trim();
+  if(!html){ toast('Nothing to load'); return; }
+  loadHTML(html, 'pasted.html');
+  $('paste-modal').classList.remove('visible');
+  $('paste-textarea').value = '';
+});
+
+// drag-drop HTML onto editor pane
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => {
+  const f = e.dataTransfer?.files?.[0];
+  if(!f) return;
+  if(f.name.match(/\.html?$/i)){
+    e.preventDefault();
+    const r = new FileReader(); r.onload = ev => loadHTML(ev.target.result, f.name); r.readAsText(f);
+  } else if(f.name.match(/\.pdf$/i)){
+    e.preventDefault();
+    loadPDF(f);
+  }
+});
+
+// ── DOWNLOAD / COPY ───────────────────────────────────────────────────────
+$('btn-download').addEventListener('click', () => {
+  if(!editorLoaded) return;
+  const html = serializeEditor();
+  const blob = new Blob([html], {type:'text/html'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'edited-' + currentFilename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  markDirty(false);
+  toast('Downloaded ✓');
+});
+
+$('btn-copy').addEventListener('click', () => {
+  if(!editorLoaded) return;
+  navigator.clipboard.writeText(serializeEditor()).then(() => toast('Copied to clipboard ✓'));
+});
+
+function serializeEditor(){
+  if(!editorDoc) return '';
+  const clone = editorDoc.documentElement.cloneNode(true);
+  clone.querySelectorAll('[contenteditable]').forEach(el => el.removeAttribute('contenteditable'));
+  clone.querySelectorAll('[spellcheck]').forEach(el => el.removeAttribute('spellcheck'));
+  return '<!DOCTYPE html>\n' + clone.outerHTML;
+}
+
+// ── CODE PANEL ────────────────────────────────────────────────────────────
+$('btn-code').addEventListener('click', () => {
+  const on = $('code-panel').classList.toggle('visible');
+  $('btn-code').classList.toggle('active', on);
+  if(on) syncCode();
+});
+$('code-close').addEventListener('click', () => {
+  $('code-panel').classList.remove('visible');
+  $('btn-code').classList.remove('active');
+});
+$('code-copy').addEventListener('click', () => {
+  navigator.clipboard.writeText($('code-mirror').value).then(() => toast('Copied ✓'));
+});
+
+function syncCode(){
+  if(!$('code-panel').classList.contains('visible')) return;
+  $('code-mirror').value = serializeEditor();
+}
+
+// ── AUTOSAVE ──────────────────────────────────────────────────────────────
+const AUTOSAVE_KEY = 'htmleditor_autosave';
+setInterval(() => {
+  if(editorLoaded && isDirty) saveToLocal();
+}, 30000);
+
+function saveToLocal(){
+  try {
+    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({
+      html: serializeEditor(), filename: currentFilename, ts: Date.now()
+    }));
+  } catch(e){}
+}
+
+function markDirty(v){
+  isDirty = v;
+  $('dirty-dot').style.display = v ? '' : 'none';
+}
+
+function restoreAutosave_check(){
+  try {
+    const data = JSON.parse(localStorage.getItem(AUTOSAVE_KEY)||'null');
+    if(!data) return;
+    const age = Math.round((Date.now()-data.ts)/60000);
+    if(confirm(`Restore autosaved session "${data.filename}" (${age} min ago)?`)){
+      loadHTML(data.html, data.filename);
+    }
+  } catch(e){}
+}
+
+window.addEventListener('beforeunload', e => {
+  if(isDirty){ e.preventDefault(); e.returnValue=''; }
+});
+
+// ── PDF VIEWER ────────────────────────────────────────────────────────────
+$('btn-open-pdf').addEventListener('click', () => $('file-pdf').click());
+$('empty-open-pdf').addEventListener('click', () => $('file-pdf').click());
+$('file-pdf').addEventListener('change', e => {
+  const f = e.target.files[0]; if(!f) return;
+  loadPDF(f); e.target.value='';
+});
+
+async function loadPDF(file){
+  if(typeof pdfjsLib === 'undefined'){ toast('PDF.js not loaded — check internet connection'); return; }
+  const buf = await file.arrayBuffer();
+  pdfDoc = await pdfjsLib.getDocument({data: new Uint8Array(buf)}).promise;
+  pdfPage = 1;
+  $('pdf-total').textContent = pdfDoc.numPages;
+  $('pdf-page-input').max = pdfDoc.numPages;
+  $('pdf-empty').style.display = 'none';
+  $('pdf-canvas-wrap').style.display = 'flex';
+  $('pdf-nav').style.display = 'flex';
+  fitPDF();
+}
+
+async function renderPDF(){
+  if(!pdfDoc) return;
+  const page = await pdfDoc.getPage(pdfPage);
+  const vp = page.getViewport({scale: pdfScale});
+  const canvas = $('pdf-canvas');
+  canvas.width = vp.width; canvas.height = vp.height;
+  await page.render({canvasContext: canvas.getContext('2d'), viewport: vp}).promise;
+  $('pdf-page-input').value = pdfPage;
+}
+
+async function fitPDF(){
+  if(!pdfDoc) return;
+  const page = await pdfDoc.getPage(pdfPage);
+  const vp = page.getViewport({scale:1});
+  const wrap = $('pdf-canvas-wrap');
+  pdfScale = Math.min((wrap.clientWidth - 32) / vp.width, 2.0);
+  $('pdf-zoom-label').textContent = Math.round(pdfScale*100)+'%';
+  renderPDF();
+}
+
+$('pdf-prev').addEventListener('click', () => { if(pdfPage>1){ pdfPage--; renderPDF(); } });
+$('pdf-next').addEventListener('click', () => { if(pdfDoc&&pdfPage<pdfDoc.numPages){ pdfPage++; renderPDF(); } });
+$('pdf-page-input').addEventListener('change', e => {
+  const p = parseInt(e.target.value);
+  if(pdfDoc && p>=1 && p<=pdfDoc.numPages){ pdfPage=p; renderPDF(); }
+});
+$('pdf-zoom-in').addEventListener('click', () => { pdfScale = Math.min(pdfScale+0.2,4); $('pdf-zoom-label').textContent=Math.round(pdfScale*100)+'%'; renderPDF(); });
+$('pdf-zoom-out').addEventListener('click', () => { pdfScale = Math.max(pdfScale-0.2,0.3); $('pdf-zoom-label').textContent=Math.round(pdfScale*100)+'%'; renderPDF(); });
+$('pdf-fit').addEventListener('click', fitPDF);
+
+// ── SPLITTER ──────────────────────────────────────────────────────────────
+const splitter = $('splitter');
+let splitterDragging = false, splitterX = 0;
+splitter.addEventListener('mousedown', e => {
+  splitterDragging = true; splitterX = e.clientX;
+  splitter.classList.add('dragging');
+  document.body.style.userSelect = 'none';
+  document.body.style.cursor = 'col-resize';
+});
+document.addEventListener('mousemove', e => {
+  if(!splitterDragging) return;
+  const layout = $('layout');
+  const total = layout.clientWidth;
+  const dx = e.clientX - splitterX;
+  splitterX = e.clientX;
+  const ep = $('pane-editor');
+  const pp = $('pane-pdf');
+  const ew = ep.offsetWidth + dx;
+  const pw = pp.offsetWidth - dx;
+  if(ew > 150 && pw > 150){
+    ep.style.flex = 'none'; ep.style.width = ew+'px';
+    pp.style.flex = '1'; pp.style.width = '';
+  }
+});
+document.addEventListener('mouseup', () => {
+  if(!splitterDragging) return;
+  splitterDragging = false;
+  splitter.classList.remove('dragging');
+  document.body.style.userSelect = '';
+  document.body.style.cursor = '';
+});
+
+// ── MISC ─────────────────────────────────────────────────────────────────
+function toast(msg){
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+// Close popovers on outside click
+document.addEventListener('click', e => {
+  if(!$('color-pop').contains(e.target) && e.target.id!=='btn-color' && e.target.id!=='btn-highlight')
+    $('color-pop').classList.remove('visible');
+  if(!$('table-pop').contains(e.target) && e.target.id!=='btn-table')
+    $('table-pop').classList.remove('visible');
+  if(!$('table-tools').contains(e.target))
+    $('table-tools').classList.remove('visible');
+});
+
+// Keyboard shortcuts in editor frame
+window.addEventListener('keydown', e => {
+  if((e.ctrlKey||e.metaKey) && e.key==='s'){ e.preventDefault(); if(editorLoaded){ saveToLocal(); markDirty(false); toast('Saved to browser ✓'); } }
+});
+
+// ── INIT ──────────────────────────────────────────────────────────────────
+initColorPicker();
+buildTableGrid();
+</script>
+</body>
+</html>
