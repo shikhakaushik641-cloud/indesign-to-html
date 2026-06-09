@@ -307,12 +307,17 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;cursor:po
     <span style="font-size:.55rem;color:var(--muted);margin-left:.25rem">(optional)</span>
   </div>
   <div class="pnav-arrow">›</div>
+  <div class="pnav-step" id="pnav-35" data-stage="35">
+    <span class="pn-num">4</span><span>Embed Images</span>
+    <span style="font-size:.55rem;color:var(--muted);margin-left:.25rem">(optional)</span>
+  </div>
+  <div class="pnav-arrow">›</div>
   <div class="pnav-step" id="pnav-4" data-stage="4">
-    <span class="pn-num">4</span><span>Edit</span>
+    <span class="pn-num">5</span><span>Edit</span>
   </div>
   <div class="pnav-arrow">›</div>
   <div class="pnav-step" id="pnav-5" data-stage="5">
-    <span class="pn-num">5</span><span>Download</span>
+    <span class="pn-num">6</span><span>Download</span>
   </div>
 </nav>
 
@@ -507,6 +512,61 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;cursor:po
 </div>
 
 <!-- ══════════════════════════════════════════
+     STAGE 3.5 — IMAGE EMBED (optional)
+═══════════════════════════════════════════ -->
+<div class="stage" id="stage-35">
+  <div class="panel-wrap">
+    <div class="info-strip blue" style="margin-bottom:1.25rem">
+      <strong>Optional step.</strong> The converted HTML has grey placeholders where linked images should appear. Drop your image files here — they will be matched by filename and embedded as base64 directly into the HTML. Supports JPG, PNG, TIFF, EPS (rasterised), BMP, GIF.
+    </div>
+
+    <div class="sec-label">Drop image files or folder</div>
+    <div class="dropzone" id="s35-dz" style="margin-bottom:1rem">
+      <input type="file" id="s35-file-input" accept="image/*,.tif,.tiff,.eps,.bmp" multiple style="display:none"/>
+      <input type="file" id="s35-folder-input" webkitdirectory multiple style="display:none"/>
+      <div class="dz-icon">
+        <svg width="36" height="36" viewBox="0 0 44 44" fill="none">
+          <path d="M22 10v18M14 18l8-8 8 8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M8 32v2a2 2 0 002 2h24a2 2 0 002-2v-2" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="dz-main">Drop image files or a <strong>folder</strong> here</div>
+      <div class="dz-sub">JPG · PNG · TIFF · EPS · BMP · GIF — matched to placeholders by filename</div>
+    </div>
+    <div style="display:flex;gap:.5rem;margin-bottom:1.25rem">
+      <button class="btn" onclick="$('s35-file-input').click()">📂 Browse files</button>
+      <button class="btn" onclick="$('s35-folder-input').click()">📁 Browse folder</button>
+    </div>
+
+    <!-- Loaded files list -->
+    <div id="s35-file-list" style="display:none;margin-bottom:1.25rem">
+      <div class="sec-label">Loaded images</div>
+      <div id="s35-chips" style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:.75rem"></div>
+    </div>
+
+    <!-- Match status -->
+    <div id="s35-status" style="display:none;margin-bottom:1.25rem">
+      <div class="sec-label">Match status</div>
+      <div id="s35-match-list" style="font-size:.8rem;line-height:2"></div>
+    </div>
+
+    <!-- Preview grid of matched images -->
+    <div id="s35-preview-wrap" style="display:none;margin-bottom:1.25rem">
+      <div class="sec-label">Matched images preview</div>
+      <div class="img-grid" id="s35-preview-grid"></div>
+    </div>
+
+    <div class="err-panel" id="s35-err"></div>
+  </div>
+  <div class="stage-footer">
+    <button class="btn" onclick="goStage(3)">← Back</button>
+    <span class="sf-info" id="s35-footer-info">Load image files to embed into the HTML</span>
+    <button class="btn" onclick="goStage(4)">Skip →</button>
+    <button class="btn primary" id="s35-embed-btn" disabled onclick="runImageEmbed()">Embed Images → Edit</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
      STAGE 4 — WYSIWYG EDITOR
 ═══════════════════════════════════════════ -->
 <div class="stage" id="stage-4">
@@ -640,7 +700,7 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;cursor:po
     <textarea id="code-mirror" readonly spellcheck="false"></textarea>
   </div>
   <div class="stage-footer">
-    <button class="btn" onclick="goStage(3)">← Back</button>
+    <button class="btn" onclick="goStage(35)">← Back</button>
     <span class="sf-info" id="ed-footer-info">Edit your document, then download when ready</span>
     <button class="btn primary" onclick="goStage(5)" id="ed-next-btn">Next: Download →</button>
   </div>
@@ -779,18 +839,31 @@ const state={
 //  PIPELINE NAVIGATION
 // ═══════════════════════════════════════════════════════
 function goStage(n){
-  document.querySelectorAll('.stage').forEach((s,i)=>s.classList.toggle('active',i+1===n));
-  document.querySelectorAll('.pnav-step').forEach((s,i)=>{
-    s.classList.toggle('active',i+1===n);
-    s.classList.toggle('done',i+1<n);
+  // Normalise: stage 35 is between 3 and 4
+  const stageOrder = [1, 2, 3, 35, 4, 5];
+  const stageIdx = stageOrder.indexOf(n);
+
+  document.querySelectorAll('.stage').forEach(s => {
+    s.classList.toggle('active', s.id === `stage-${n}`);
   });
-  if(n===4 && !state.editorLoaded && state.convertedHTML) loadEditor(state.convertedHTML, state.convertedTitle);
-  if(n===5) prepDownload();
-  // Resize PDF on editor stage
-  if(n===4 && state.edPdfDoc) fitEdPDF();
+
+  // Update nav — map stage numbers to nav step ids
+  const navMap = {1:'pnav-1', 2:'pnav-2', 3:'pnav-3', 35:'pnav-35', 4:'pnav-4', 5:'pnav-5'};
+  document.querySelectorAll('.pnav-step').forEach(s => {
+    const sId = s.id;
+    const sStage = Object.keys(navMap).find(k => navMap[k] === sId);
+    const sIdx = sStage !== undefined ? stageOrder.indexOf(+sStage) : -1;
+    s.classList.toggle('active', sId === navMap[n]);
+    s.classList.toggle('done', sIdx !== -1 && sIdx < stageIdx);
+  });
+
+  if(n === 35) initS35();
+  if(n === 4 && !state.editorLoaded && state.convertedHTML) loadEditor(state.convertedHTML, state.convertedTitle);
+  if(n === 5) prepDownload();
+  if(n === 4 && state.edPdfDoc) fitEdPDF();
 }
 
-function skipToEditor(){goStage(4);}
+function skipToEditor(){ goStage(35); }
 function startOver(){location.href="index.html";}
 
 // ═══════════════════════════════════════════════════════
@@ -980,6 +1053,7 @@ async function runIDMLConvert(){
     const buffer=await state.idmlFile.arrayBuffer();
     s2Progress('Unzipping IDML…',20,'Parsing XML structure');await tick();
     const parsed=await parseIDML(buffer);
+    window._parsedIDML = parsed;
     window._parsedLinkedFiles=parsed.linkedImageFiles||[];
     s2Progress('Resolving styles…',50,`${parsed.stories.length} stories`);await tick();
     s2Progress('Converting to HTML…',70,'Mapping styles');await tick();
@@ -1302,11 +1376,166 @@ function injectFigures(){
   });
   state.convertedHTML=html;
   toast(`${ri} figure(s) injected ✓`);
-  goStage(4);
+  goStage(35);
 }
 
 // ═══════════════════════════════════════════════════════
-//  STAGE 4 — EDITOR
+//  STAGE 3.5 — IMAGE EMBED
+// ═══════════════════════════════════════════════════════
+const s35Images = {};
+
+function normFname(n){
+  return n.toLowerCase().replace(/\s+/g,'_').replace(/[()&+]/g,'')
+    .replace(/\.[^.]+$/,'').replace(/[^a-z0-9_\-]/g,'_');
+}
+
+function initS35(){
+  // Auto-populate from imageFiles already loaded in Stage 2
+  Object.keys(imageFiles).forEach(k => {
+    if(!s35Images[k]) s35Images[k] = {dataUrl: imageFiles[k], origName: k};
+  });
+  renderS35();
+}
+
+const s35DzEl = $('s35-dz');
+s35DzEl.addEventListener('click', () => $('s35-file-input').click());
+s35DzEl.addEventListener('dragover', e => { e.preventDefault(); s35DzEl.classList.add('drag-over'); });
+s35DzEl.addEventListener('dragleave', () => s35DzEl.classList.remove('drag-over'));
+s35DzEl.addEventListener('drop', e => { e.preventDefault(); s35DzEl.classList.remove('drag-over'); handleS35Files([...e.dataTransfer.files]); });
+$('s35-file-input').addEventListener('change', e => { handleS35Files([...e.target.files]); e.target.value=''; });
+$('s35-folder-input').addEventListener('change', e => { handleS35Files([...e.target.files]); e.target.value=''; });
+
+async function handleS35Files(files){
+  const ok = /\.(png|jpe?g|gif|bmp|webp|tiff?|eps|svg)$/i;
+  const imgs = files.filter(f => ok.test(f.name));
+  if(!imgs.length){ showErr('s35-err','No image files found (JPG, PNG, TIFF, EPS, BMP, GIF, SVG).'); return; }
+  hideErr('s35-err');
+  for(const f of imgs){
+    const dataUrl = await new Promise(res => {
+      const r = new FileReader(); r.onload = ev => res(ev.target.result); r.readAsDataURL(f);
+    });
+    s35Images[f.name] = {dataUrl, origName: f.name};
+    imageFiles[f.name] = dataUrl;
+  }
+  renderS35();
+}
+
+function renderS35(){
+  const linked = window._parsedLinkedFiles || [];
+  const loaded = Object.keys(s35Images);
+
+  // Chips
+  const chips = $('s35-chips');
+  chips.innerHTML = '';
+  loaded.forEach(name => {
+    const c = document.createElement('span');
+    c.className = 'img-chip';
+    c.innerHTML = `📷 ${esc(name)} <button onclick="delete s35Images[${JSON.stringify(name)}];delete imageFiles[${JSON.stringify(name)}];renderS35()">×</button>`;
+    chips.appendChild(c);
+  });
+  $('s35-file-list').style.display = loaded.length ? '' : 'none';
+
+  if(!loaded.length){
+    $('s35-status').style.display = 'none';
+    $('s35-preview-wrap').style.display = 'none';
+    $('s35-embed-btn').disabled = true;
+    $('s35-footer-info').textContent = linked.length
+      ? `${linked.length} linked image(s) needed — drop the InDesign Links folder`
+      : 'Drop image files to embed';
+    return;
+  }
+
+  // Match status
+  const matchList = $('s35-match-list');
+  matchList.innerHTML = '';
+  const previewGrid = $('s35-preview-grid');
+  previewGrid.innerHTML = '';
+  let matchCount = 0;
+
+  loaded.forEach(fname => {
+    const {dataUrl} = s35Images[fname];
+    const normL = normFname(fname);
+    const linkedMatch = linked.find(lf =>
+      normFname(lf) === normL || normFname(lf).includes(normL) || normL.includes(normFname(lf))
+    );
+    const row = document.createElement('div');
+    row.style.cssText = 'font-size:.78rem;padding:3px 0;display:flex;align-items:center;gap:.5rem';
+    if(linkedMatch || !linked.length){
+      row.innerHTML = `<span style="color:var(--green);font-weight:700">✓</span> <strong>${esc(fname)}</strong>${linkedMatch ? ` → <code style="font-size:.72em;background:var(--surface);padding:1px 4px;border-radius:3px">${esc(linkedMatch)}</code>` : ''}`;
+      const card = document.createElement('div');
+      card.className = 'img-card';
+      card.innerHTML = `<div class="img-thumb"><img src="${dataUrl}" alt="${esc(fname)}"/></div>
+        <div class="img-card-info"><div class="img-card-name">${esc(fname)}</div></div>`;
+      previewGrid.appendChild(card);
+    } else {
+      row.innerHTML = `<span style="color:var(--warn)">~</span> <strong>${esc(fname)}</strong> <span style="color:var(--muted);font-size:.72em">no matching link — will embed anyway</span>`;
+    }
+    matchCount++;
+    matchList.appendChild(row);
+  });
+
+  $('s35-status').style.display = '';
+  $('s35-preview-wrap').style.display = previewGrid.children.length ? '' : 'none';
+  $('s35-embed-btn').disabled = false;
+  $('s35-footer-info').textContent = `${matchCount} image(s) ready — click Embed to reconvert`;
+}
+
+async function runImageEmbed(){
+  const total = Object.keys(s35Images).length;
+  if(!total){ toast('No images loaded'); return; }
+
+  $('s35-embed-btn').disabled = true;
+  $('s35-embed-btn').textContent = 'Embedding…';
+
+  try {
+    // PRIMARY: reconvert IDML with images now in imageFiles
+    if(window._parsedIDML && state.idmlFile){
+      await tick();
+      const title = state.convertedTitle || state.idmlFile.name.replace(/\.idml$/i,'');
+      const {zip, meta, matched, unmatched, htmlString} = await buildIDMLZip(window._parsedIDML, title);
+      state.convertedZipBlob = await zip.generateAsync({type:'blob',compression:'DEFLATE',compressionOptions:{level:6}});
+      state.convertedHTML = htmlString;
+      state.editorLoaded = false;
+      toast(`${matched.length} image(s) embedded ✓`);
+      goStage(4);
+      return;
+    }
+
+    // FALLBACK: post-process HTML string (PDF path)
+    let html = state.convertedHTML;
+    if(!html){ toast('No converted HTML'); return; }
+    let embedded = 0;
+
+    // img-placeholder divs
+    html = html.replace(/<div class="img-placeholder"[^>]*>\s*📷\s*([^<\n]+?)\s*<\/div>/g, (full, rawName) => {
+      const norm = normFname(rawName.trim());
+      const match = Object.keys(s35Images).find(k => normFname(k)===norm || normFname(k).includes(norm) || norm.includes(normFname(k)));
+      if(!match) return full;
+      embedded++;
+      return `<img src="${s35Images[match].dataUrl}" alt="${esc(rawName.trim())}" style="max-width:100%;height:auto;display:block;margin:0 auto"/>`;
+    });
+
+    // non-base64 img src
+    html = html.replace(/<img([^>]+)src="(?!data:)([^"]+)"([^>]*)>/g, (full, pre, src, post) => {
+      const fname = src.split('/').pop().split('\\').pop();
+      const norm = normFname(fname);
+      const match = Object.keys(s35Images).find(k => normFname(k)===norm || normFname(k).includes(norm) || norm.includes(normFname(k)));
+      if(!match) return full;
+      embedded++;
+      return `<img${pre}src="${s35Images[match].dataUrl}"${post}>`;
+    });
+
+    state.convertedHTML = html;
+    state.editorLoaded = false;
+    toast(`${embedded} image(s) embedded ✓`);
+    goStage(4);
+  } catch(err) {
+    showErr('s35-err', 'Embed failed: ' + err.message);
+  } finally {
+    $('s35-embed-btn').disabled = false;
+    $('s35-embed-btn').textContent = 'Embed Images → Edit';
+  }
+}
 // ═══════════════════════════════════════════════════════
 function loadEditor(html,title){
   state.editorLoaded=false;
