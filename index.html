@@ -1659,6 +1659,99 @@ function dlBlob(blob,name){
   toast('Downloading…');
 }
 
+
+// ── Inline XML Parser ────────────────────────────────────────────────────────
+class IDMLXMLParser {
+  constructor() {
+    this._ARR = new Set([
+      'Story','ParagraphStyleRange','CharacterStyleRange',
+      'Spread','Page','TextFrame','Image','Link',
+      'ParagraphStyle','CharacterStyle','ParagraphStyleGroup','CharacterStyleGroup',
+      'Rectangle','Oval','Group','Table','Row','Cell','Column',
+    ]);
+  }
+  parse(xml) {
+    xml = xml.replace(/<\?[^?]*\?>/g,'').replace(/<!--[\s\S]*?-->/g,'')
+             .replace(/<!DOCTYPE[^>]*>/g,'').trim();
+    const root = {};
+    const stack = [{ obj: root, tag:'__root__', local:'__root__' }];
+    const re = /<(\/?)([A-Za-z_][\w:.-]*)([^>]*?)(\/?)>/g;
+    let pos = 0, m;
+    while ((m = re.exec(xml)) !== null) {
+      const raw = xml.slice(pos, m.index);
+      pos = re.lastIndex;
+      if (raw.trim() && stack.length > 1) {
+        const cur = stack[stack.length-1];
+        if (cur.local === 'Content') cur.obj.__text = this._dec(raw.trim());
+      }
+      const isClose = m[1]==='/';
+      const tagName = m[2];
+      const attrStr = m[3].trim();
+      const isSelf  = m[4]==='/';
+      const local   = tagName.includes(':') ? tagName.split(':').pop() : tagName;
+      if (isClose) {
+        if (stack.length > 1) {
+          const fin = stack.pop();
+          const par = stack[stack.length-1];
+          let val = fin.obj;
+          if (Object.keys(val).length===1 && '__text' in val) val = val.__text;
+          else delete val.__text;
+          this._att(par.obj, tagName, local, val);
+        }
+      } else {
+        const attrs = this._pAttr(attrStr);
+        if (isSelf) {
+          this._att(stack[stack.length-1].obj, tagName, local, attrs);
+        } else {
+          const child = {...attrs};
+          stack.push({obj:child, tag:tagName, local});
+        }
+      }
+    }
+    while (stack.length > 1) {
+      const fin = stack.pop();
+      const par = stack[stack.length-1];
+      let val = fin.obj;
+      if (Object.keys(val).length===1 && '__text' in val) val = val.__text;
+      else delete val.__text;
+      this._att(par.obj, fin.tag, fin.local, val);
+    }
+    return root;
+  }
+  _att(p, tagName, local, val) {
+    const ex = p[tagName];
+    if (this._ARR.has(local)) {
+      if (!ex) p[tagName]=[val]; else ex.push(val);
+    } else {
+      if (ex===undefined) p[tagName]=val;
+      else if (Array.isArray(ex)) ex.push(val);
+      else p[tagName]=[ex,val];
+    }
+  }
+  _pAttr(str) {
+    if (!str) return {};
+    const out={};
+    const re=/([A-Za-z_][\w:.-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+)))?/g;
+    let m;
+    while ((m=re.exec(str))!==null) {
+      if (!m[0].trim()) continue;
+      const v = m[2]!==undefined?m[2]:m[3]!==undefined?m[3]:m[4]!==undefined?m[4]:true;
+      out['@_'+m[1]] = v===true?true:this._coerce(this._dec(String(v)));
+    }
+    return out;
+  }
+  _coerce(v) {
+    if (v==='true') return true; if (v==='false') return false;
+    if (v!==''&&!isNaN(+v)&&v.trim()!=='') return +v;
+    return v;
+  }
+  _dec(s) {
+    return s.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>')
+            .replace(/&quot;/g,'"').replace(/&apos;/g,"'")
+            .replace(/&#(\d+);/g,(_,n)=>String.fromCharCode(+n));
+  }
+}
+
 // ═══════════════════════════════════════════════════════
 //  IDML ENGINE  (from idml-to-html.html)
 // ═══════════════════════════════════════════════════════
