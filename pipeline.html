@@ -3238,13 +3238,23 @@ function parseIDMLY(boundsStr){
 // Detect and split into separate blocks so each term gets its own <li>.
 // ── Split packed bullet blocks ─────────────────────────────────────────────
 // Handles: "BoldTerm:content BoldTerm2:content" packed into one ParagraphStyleRange
+// Detect bold from either inline FontStyle attribute OR named character style.
+// spansToHTML wraps bold via EITHER path; splitPackedBullets must match both.
+function isBoldSpan(sp) {
+  if (!sp) return false;
+  const fs = (sp.props?.fontStyle||'').toLowerCase();
+  if (fs.includes('bold') || fs.includes('heavy')) return true;
+  const cs = (sp.styleName||'').toLowerCase();
+  return cs.includes('bold') || cs.includes('heavy') || cs.includes('strong');
+}
+
 function splitPackedBullets(spans, styleName) {
   // ── Method 1: span-level detection (bold span follows content) ──────────
   let hasPriorContent = false, splitCount = 0;
   for (const sp of spans) {
     const t = (sp.text||'').trim();
     if (!t) continue;
-    const bold = sp.props?.fontStyle?.toLowerCase().includes('bold');
+    const bold = isBoldSpan(sp);
     if (bold && hasPriorContent && t[0] === t[0].toUpperCase() && !t.startsWith('(')) splitCount++;
     hasPriorContent = true;
   }
@@ -3252,7 +3262,7 @@ function splitPackedBullets(spans, styleName) {
     const result = []; let cur = []; hasPriorContent = false;
     for (const sp of spans) {
       const t = (sp.text||'').trim();
-      const bold = sp.props?.fontStyle?.toLowerCase().includes('bold');
+      const bold = isBoldSpan(sp);
       const isNew = bold && hasPriorContent && t.length > 0 && t[0] === t[0].toUpperCase() && !t.startsWith('(');
       if (isNew && cur.length) { result.push({styleName, spans:[...cur]}); cur = []; }
       cur.push(sp);
