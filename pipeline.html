@@ -2692,6 +2692,22 @@ async function parseIDML(buffer) {
     return d;
   }
 
+  // Build SVG path d string from an already-parsed pts array
+  function pathPointsToSVGd2(pts, closePath) {
+    if (!pts || pts.length < 1) return '';
+    let d = `M ${pts[0].ax},${pts[0].ay}`;
+    const n = pts.length;
+    for (let i = 0; i < n - 1 + (closePath ? 1 : 0); i++) {
+      const cur  = pts[i % n];
+      const next = pts[(i+1) % n];
+      const straight = cur.rx===cur.ax && cur.ry===cur.ay && next.lx===next.ax && next.ly===next.ay;
+      if (straight) d += ` L ${next.ax},${next.ay}`;
+      else          d += ` C ${cur.rx},${cur.ry} ${next.lx},${next.ly} ${next.ax},${next.ay}`;
+    }
+    if (closePath) d += ' Z';
+    return d;
+  }
+
   // Extract the body of a <Group>...</Group> from a flat XML string starting at pos
   function extractGroupBody(flat, startPos) {
     let depth = 1, i = startPos;
@@ -2737,49 +2753,101 @@ async function parseIDML(buffer) {
       const body    = extractGroupBody(flat2, bodyStart);
       const noTF    = stripTextFrames(body);
 
-      // Collect all anchor points to compute bounding box
-      const allAnchors = [];
+      // ── Collect shape data (PathPoints OR GeometricBounds fallback) ──────────
+      // InDesign stores shape geometry in either PathPointArray (explicit points)
+      // or GeometricBounds attribute (bounding box only). We handle both.
+      const shapeItems = []; // {tag, fill, strk, strkW, stx, sty, gb, pts}
+      const shapeRe = /<(Polygon|Rectangle|Oval|GraphicLine|Path)(\s[^>]*?)(?:\/?>)/g;
+      let sm;
+      while ((sm = shapeRe.exec(noTF)) !== null) {
+        const shpTag  = sm[1];
+        const sAttr   = sm[2];
+        const fillN   = gAttr(sAttr, 'FillColor')   || 'None';
+        const strkN   = gAttr(sAttr, 'StrokeColor') || 'None';
+        const strkW   = parseFloat(gAttr(sAttr, 'StrokeWeight') || '1');
+        const sItRaw  = gAttr(sAttr, 'ItemTransform');
+        const sIt     = sItRaw ? sItRaw.split(/\s+/).map(Number) : [1,0,0,1,0,0];
+        const stx = sIt[4]||0, sty = sIt[5]||0;
+        const gbRawS  = gAttr(sAttr, 'GeometricBounds');
+
+        const shpEnd  = sm.index + sm[0].length;
+        const shpBody = noTF.slice(shpEnd, shpEnd + 3000);
+        const closePath = !(/PathOpen="true"/.test(shpBody.slice(0, 500)));
+
+        // Try PathPointArray first
+        const pts = [];
+        const ppRe2 = /<PathPoint\s([^>]*?)\/?>/g;
+        let pm3;
+        while ((pm3 = ppRe2.exec(shpBody)) !== null) {
+          const ancRaw2 = gAttr(pm3[1], 'Anchor');
+          if (!ancRaw2) continue;
+          const anc2 = ancRaw2.split(/\s+/).map(Number);
+          if (anc2.length < 2 || isNaN(anc2[0])) continue;
+          const ldR = gAttr(pm3[1], 'LeftDirection');
+          const rdR = gAttr(pm3[1], 'RightDirection');
+          const ld2 = ldR ? ldR.split(/\s+/).map(Number) : anc2;
+          const rd2 = rdR ? rdR.split(/\s+/).map(Number) : anc2;
+          pts.push({ ax:anc2[0], ay:anc2[1], lx:ld2[0], ly:ld2[1], rx:rd2[0], ry:rd2[1] });
+        }
+
+        // GeometricBounds fallback: synthesize path from bounds
+        let gb = gbRawS ? gbRawS.split(/\s+/).map(Number) : null;
+        if (!gb && shpBody) {
+          const gbInBody = gAttr(shpBody.slice(0, 200), 'GeometricBounds');
+          if (gbInBody) gb = gbInBody.split(/\s+/).map(Number);
+        }
+
+        shapeItems.push({ shpTag, fillN, strkN, strkW, stx, sty, pts, gb, closePath });
+      }
+
+      // Compute bounding box from all points + GB corners
+      const allPts = [];
+      for (const si of shapeItems) {
+        for (const p of si.pts) allPts.push([p.ax + tx2 + si.stx, p.ay + ty2 + si.sty]);
+        if (si.gb && si.gb.length >= 4) {
+          allPts.push([si.gb[1]+tx2+si.stx, si.gb[0]+ty2+si.sty]);
+          allPts.push([si.gb[3]+tx2+si.stx, si.gb[2]+ty2+si.sty]);
+        }
+      }
+      // Also check Anchor attrs outside of shape tags (e.g. standalone PathPointArrays)
       const anchRe2 = /\bAnchor="([^"]+)"/g;
       let ar2;
       while ((ar2 = anchRe2.exec(noTF)) !== null) {
         const pp = ar2[1].split(/\s+/).map(Number);
-        if (pp.length >= 2 && !isNaN(pp[0]) && !isNaN(pp[1])) allAnchors.push(pp);
+        if (pp.length >= 2 && !isNaN(pp[0])) allPts.push([pp[0]+tx2, pp[1]+ty2]);
       }
-      if (allAnchors.length < 2) continue;
+      if (allPts.length < 2) continue;
 
-      const xs2 = allAnchors.map(p => p[0] + tx2);
-      const ys2 = allAnchors.map(p => p[1] + ty2);
+      const xs2 = allPts.map(p => p[0]), ys2 = allPts.map(p => p[1]);
       const minX2 = Math.min(...xs2), maxX2 = Math.max(...xs2);
       const minY2 = Math.min(...ys2), maxY2 = Math.max(...ys2);
       const gW = maxX2 - minX2, gH = maxY2 - minY2;
       if (gW < 8 || gH < 8) continue;
 
-      // Build SVG path elements for each child shape
+      // Build SVG elements
       const svgParts = [];
-      const shapeRe = /<(Polygon|Rectangle|Oval|GraphicLine|Path)(\s[^>]*?)(?:\/?>)/g;
-      let sm;
-      while ((sm = shapeRe.exec(noTF)) !== null) {
-        const sAttr = sm[2];
-        const fillN = gAttr(sAttr, 'FillColor')   || 'None';
-        const strkN = gAttr(sAttr, 'StrokeColor') || 'None';
-        const strkW = parseFloat(gAttr(sAttr, 'StrokeWeight') || '1');
-        const sItRaw = gAttr(sAttr, 'ItemTransform');
-        const sIt = sItRaw ? sItRaw.split(/\s+/).map(Number) : [1,0,0,1,0,0];
-        const stx = sIt[4]||0, sty = sIt[5]||0;
+      for (const si of shapeItems) {
+        const fill   = idmlColor(si.fillN);
+        const stroke = idmlColor(si.strkN);
+        const xlate  = `translate(${(tx2+si.stx)-minX2},${(ty2+si.sty)-minY2})`;
+        const commonAttrs = `fill="${fill}" stroke="${stroke}" stroke-width="${si.strkW}" stroke-linejoin="round" stroke-linecap="round"`;
 
-        // Find the PathPointArray that follows this tag (up to 3000 chars ahead)
-        const shpEnd  = sm.index + sm[0].length;
-        const shpBody = noTF.slice(shpEnd, shpEnd + 3000);
-        const closePath = !(/PathOpen="true"/.test(shpBody.slice(0, 500)));
-        const svgD = pathPointsToSVGd(shpBody, closePath);
-        if (!svgD) continue;
-
-        const xlate = `translate(${(tx2 + stx) - minX2},${(ty2 + sty) - minY2})`;
-        svgParts.push(
-          `<path transform="${xlate}" d="${svgD}" ` +
-          `fill="${idmlColor(fillN)}" stroke="${idmlColor(strkN)}" ` +
-          `stroke-width="${strkW}" stroke-linejoin="round" stroke-linecap="round"/>`
-        );
+        if (si.pts.length >= 2) {
+          // Use explicit PathPoints
+          const svgD = pathPointsToSVGd2(si.pts, si.closePath);
+          if (svgD) svgParts.push(`<path transform="${xlate}" d="${svgD}" ${commonAttrs}/>`);
+        } else if (si.gb && si.gb.length >= 4) {
+          // Synthesize from GeometricBounds
+          const t=si.gb[0], l=si.gb[1], b2=si.gb[2], r=si.gb[3];
+          const w=r-l, h=b2-t;
+          if (si.shpTag === 'Oval') {
+            const cx2=(l+r)/2, cy2=(t+b2)/2, rx2=w/2, ry2=h/2;
+            svgParts.push(`<ellipse transform="${xlate}" cx="${cx2}" cy="${cy2}" rx="${rx2}" ry="${ry2}" ${commonAttrs}/>`);
+          } else {
+            // Rectangle, Polygon, Path, GraphicLine → bounding rect
+            svgParts.push(`<rect transform="${xlate}" x="${l}" y="${t}" width="${w}" height="${h}" ${commonAttrs}/>`);
+          }
+        }
       }
 
       // Add inline text labels from TextFrame children (as foreignObject)
