@@ -986,37 +986,29 @@ function clearIDMLPdf(){
 }
 
 // Extract actual embedded image XObjects from PDF using PDF.js operator list.
-// Matches extracted images to InDesign frame filenames by page + aspect ratio.
+// Works for both spread-level frames AND story-anchored inline images.
 async function extractImagesFromPDF(pdfBuf, meta){
-  const frames = (meta.imageFrames || []).filter(f => f.filename);
   if(!pdfBuf) return;
+
+  // Build full ordered list of target filenames (story-anchored + spread-level)
+  const targetFiles = (meta.storyImageFiles || []).filter(f => !imageFiles[f]);
+  if(!targetFiles.length) return;
+
   try{
     const pdfDoc = await pdfjsLib.getDocument({data: new Uint8Array(pdfBuf)}).promise;
 
-    // Group InDesign frames by page number
-    const framesByPage = {};
-    frames.forEach(f => {
-      const pg = f.page_num || 0;
-      if(!framesByPage[pg]) framesByPage[pg] = [];
-      framesByPage[pg].push(f);
-    });
+    // Step 1: extract ALL image XObjects from every page, in document order
+    const allExtracted = []; // [{dataURL, width, height}]
 
-    // Collect all frames with no page_num into page 0 bucket for fallback
-    const allPageNums = [...new Set([
-      ...Object.keys(framesByPage).map(Number),
-      ...Array.from({length: pdfDoc.numPages}, (_,i) => i+1)
-    ])].filter(n => n >= 1 && n <= pdfDoc.numPages).sort((a,b)=>a-b);
-
-    for(const pgNum of allPageNums){
+    for(let pgNum = 1; pgNum <= pdfDoc.numPages; pgNum++){
       const page = await pdfDoc.getPage(pgNum);
       const opList = await page.getOperatorList();
 
-      // Collect unique image XObject names in draw order (top-to-bottom read order)
+      // Collect unique image XObject names in paint order
       const imgNames = [];
       const seen = new Set();
       for(let i = 0; i < opList.fnArray.length; i++){
         const fn = opList.fnArray[i];
-        // OPS.paintImageXObject = 85, paintImageXObjectRepeat = 88, paintInlineImageXObject = 86
         if(fn === pdfjsLib.OPS.paintImageXObject ||
            fn === pdfjsLib.OPS.paintImageXObjectRepeat ||
            fn === pdfjsLib.OPS.paintInlineImageXObject){
@@ -1026,64 +1018,71 @@ async function extractImagesFromPDF(pdfBuf, meta){
       }
       if(!imgNames.length) continue;
 
-      // Render page to force image objects to load into page.objs / page.commonObjs
+      // Render page to force PDF.js to load image data into page.objs
       const vp = page.getViewport({scale: 1.5});
-      const offscreen = document.createElement('canvas');
-      offscreen.width = vp.width; offscreen.height = vp.height;
-      await page.render({canvasContext: offscreen.getContext('2d'), viewport: vp}).promise;
+      const off = document.createElement('canvas');
+      off.width = vp.width; off.height = vp.height;
+      await page.render({canvasContext: off.getContext('2d'), viewport: vp}).promise;
 
-      // Extract image pixel data from page.objs (PDF.js internal, available after render)
-      const extracted = []; // [{dataURL, width, height}]
       for(const name of imgNames){
         let imgData = null;
         try{ imgData = page.objs.get(name); }catch(e){}
         if(!imgData){ try{ imgData = page.commonObjs.get(name); }catch(e){} }
-        if(imgData && imgData.data && imgData.width && imgData.height){
-          const ic = document.createElement('canvas');
-          ic.width = imgData.width; ic.height = imgData.height;
-          const ictx = ic.getContext('2d');
-          const idata = ictx.createImageData(imgData.width, imgData.height);
-          // PDF.js image data may be RGB (3 bytes/px) or RGBA (4 bytes/px)
-          const src = imgData.data;
-          const dst = idata.data;
-          if(src.length === imgData.width * imgData.height * 4){
-            dst.set(src);
-          } else if(src.length === imgData.width * imgData.height * 3){
-            for(let p=0,q=0; p<src.length; p+=3,q+=4){
-              dst[q]=src[p]; dst[q+1]=src[p+1]; dst[q+2]=src[p+2]; dst[q+3]=255;
-            }
-          } else { continue; }
-          ictx.putImageData(idata, 0, 0);
-          extracted.push({dataURL: ic.toDataURL('image/jpeg', 0.92), width: imgData.width, height: imgData.height});
-        }
-      }
-      if(!extracted.length) continue;
+        if(!imgData || !imgData.data || !imgData.width || !imgData.height) continue;
+        // Skip tiny decorative images (bullets, icons, background patterns)
+        if(imgData.width < 60 || imgData.height < 60) continue;
 
-      // Match extracted images to InDesign frames on this page (or unplaced frames)
-      const pageFrames = (framesByPage[pgNum] || []).filter(f => !imageFiles[f.filename]);
-      const unplaced   = (framesByPage[0] || []).filter(f => !imageFiles[f.filename]);
-      const targets = [...pageFrames, ...unplaced];
-      if(!targets.length) continue;
-
-      // Match by best aspect-ratio similarity; each extracted image used once
-      const usedExtr = new Set();
-      for(const frame of targets){
-        if(imageFiles[frame.filename]) continue;
-        const targetAspect = frame.widthPt && frame.heightPt ? frame.widthPt / frame.heightPt : null;
-        let bestIdx = -1, bestScore = Infinity;
-        extracted.forEach((ex, idx) => {
-          if(usedExtr.has(idx)) return;
-          const score = targetAspect
-            ? Math.abs(ex.width/ex.height - targetAspect)
-            : 0;
-          if(score < bestScore){ bestScore = score; bestIdx = idx; }
+        const ic = document.createElement('canvas');
+        ic.width = imgData.width; ic.height = imgData.height;
+        const ictx = ic.getContext('2d');
+        const idata = ictx.createImageData(imgData.width, imgData.height);
+        const src = imgData.data, dst = idata.data;
+        if(src.length === imgData.width * imgData.height * 4){
+          dst.set(src);
+        } else if(src.length === imgData.width * imgData.height * 3){
+          for(let p=0,q=0; p<src.length; p+=3,q+=4){
+            dst[q]=src[p]; dst[q+1]=src[p+1]; dst[q+2]=src[p+2]; dst[q+3]=255;
+          }
+        } else continue;
+        ictx.putImageData(idata, 0, 0);
+        allExtracted.push({
+          dataURL: ic.toDataURL('image/jpeg', 0.92),
+          width: imgData.width,
+          height: imgData.height
         });
-        if(bestIdx >= 0){
-          imageFiles[frame.filename] = extracted[bestIdx].dataURL;
-          usedExtr.add(bestIdx);
-        }
       }
     }
+
+    if(!allExtracted.length) return;
+
+    // Step 2: match extracted images to target filenames.
+    // Strategy: aspect-ratio matching. Each extracted image used at most once.
+    // Build aspect map from imageFrames (spread-level coords, if any)
+    const aspectMap = {};
+    (meta.imageFrames||[]).forEach(f => {
+      if(f.filename && f.widthPt && f.heightPt)
+        aspectMap[f.filename] = f.widthPt / f.heightPt;
+    });
+
+    const usedExtr = new Set();
+    for(const fname of targetFiles){
+      if(imageFiles[fname]) continue;
+      const targetAspect = aspectMap[fname] || null;
+      let bestIdx = -1, bestScore = Infinity;
+      allExtracted.forEach((ex, idx) => {
+        if(usedExtr.has(idx)) return;
+        // Score: aspect ratio diff if known, else pick by document order (idx)
+        const score = targetAspect != null
+          ? Math.abs(ex.width / ex.height - targetAspect)
+          : idx * 0.001; // order-based tiebreaker
+        if(score < bestScore){ bestScore = score; bestIdx = idx; }
+      });
+      if(bestIdx >= 0){
+        imageFiles[fname] = allExtracted[bestIdx].dataURL;
+        usedExtr.add(bestIdx);
+      }
+    }
+
     renderImgList();
   }catch(e){ console.warn('PDF image extraction failed:', e); }
 }
@@ -1207,7 +1206,7 @@ async function runIDMLConvert(){
     let {zip,meta,matched,unmatched,htmlString}=await buildIDMLZip(parsed,title);
 
     // Auto-extract images from PDF if user supplied one
-    if(state.idmlPdfBuf && meta && meta.imageFrames && meta.imageFrames.length){
+    if(state.idmlPdfBuf && meta && (meta.storyImageFiles?.length || meta.imageFrames?.length)){
       s2Progress('Extracting images from PDF…',80,'Rendering pages');await tick();
       const beforeCount=Object.keys(imageFiles).length;
       await extractImagesFromPDF(state.idmlPdfBuf, meta);
@@ -3696,6 +3695,23 @@ function buildMeta(parsed,blocks) {
       }
     });
   });
+  // Collect all image filenames referenced inline in stories (anchored objects)
+  const storyImgSeen = new Set();
+  const storyImageFiles = [];
+  blocks.forEach(b => {
+    if (b.styleName === '_image_' && b.imageFile && !storyImgSeen.has(b.imageFile)) {
+      storyImgSeen.add(b.imageFile);
+      storyImageFiles.push(b.imageFile);
+    }
+  });
+  // Also add spread-level image filenames not already in storyImageFiles
+  imgFrameMeta.forEach(f => {
+    if (f.filename && !storyImgSeen.has(f.filename)) {
+      storyImgSeen.add(f.filename);
+      storyImageFiles.push(f.filename);
+    }
+  });
+
   return {
     generatedAt:new Date().toISOString(),
     storiesFound:parsed.stories.length,
@@ -3708,6 +3724,7 @@ function buildMeta(parsed,blocks) {
     styleUsageFrequency:freq,
     unmappedStyles:Object.keys(freq).filter(n=>mapPS(n)._unmapped),
     imageFrames:imgFrameMeta,
+    storyImageFiles,
   };
 }
 // ── Page layout CSS (grid-based, reflowable) ─────────────────────────────────
