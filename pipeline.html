@@ -384,6 +384,12 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;cursor:po
         <div class="img-missing" id="idml-img-missing"></div>
       </div>
       <div class="err-panel" id="s2-idml-err"></div>
+      <div style="display:flex;gap:1.5rem;align-items:center;margin-top:.75rem;margin-bottom:.5rem;font-size:.8rem">
+        <label style="display:flex;align-items:center;gap:.4rem">
+          <input type="checkbox" id="chk-page-layout"/>
+          Preserve page layout <span style="color:var(--muted);font-size:.72rem">(uses spread geometry — pixel-accurate positioning)</span>
+        </label>
+      </div>
     </div>
 
     <!-- PDF sub-panel -->
@@ -2424,10 +2430,27 @@ async function parseIDML(buffer) {
     });
   }
 
-  // Embedded images (rare - only if packaged with IDML)
-  zip.file(/\.(png|jpe?g|gif|svg|eps|tiff?)$/i).forEach(f=>{
-    res.images.push({name:f.name.split('/').pop(),file:f});
-  });
+  // Extract embedded images from the IDML zip (Links/ folder or anywhere in the archive)
+  // and load them directly into imageFiles so findImage() resolves them without manual upload
+  const imgFiles = zip.file(/\.(png|jpe?g|jpg|gif|svg|bmp|tiff?)$/i);
+  for (const f of imgFiles) {
+    const name = f.name.split('/').pop();
+    if (!name || imageFiles[name]) continue; // already loaded
+    try {
+      const buf = await f.async('arraybuffer');
+      const ext = (name.split('.').pop()||'').toLowerCase();
+      const mimeMap = {png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',
+                       bmp:'image/bmp',tif:'image/tiff',tiff:'image/tiff',svg:'image/svg+xml'};
+      const mime = mimeMap[ext] || 'image/png';
+      // Chunked base64 to avoid call-stack overflow on large images
+      const bytes = new Uint8Array(buf);
+      let b64 = '', chunkSz = 8192;
+      for (let i = 0; i < bytes.length; i += chunkSz)
+        b64 += String.fromCharCode(...bytes.subarray(i, i + chunkSz));
+      imageFiles[name] = `data:${mime};base64,${btoa(b64)}`;
+      res.images.push({name, file: f});
+    } catch(e) { /* skip unreadable */ }
+  }
 
   // Parse ALL XMLs to extract link ID → filename mapping
   // AND rectangle Self → link ID mapping (for image placement)
@@ -2498,6 +2521,279 @@ async function parseIDML(buffer) {
   res.imageFrames = [];
   res.spreads.forEach(sp => {
     sp.imageFrames && res.imageFrames.push(...sp.imageFrames);
+  });
+
+  // Page geometry + frame geometry — parsed directly from raw spread XMLs
+  // (more reliable than IDMLXMLParser for attribute extraction)
+  res.spreadPageGeometry = {};
+  res.rawFrameGeo = {};  // frameId → {bounds, transform, storyRef, type}
+
+  for (const f of zip.file(/^Spreads\/Spread_.*\.xml$/)) {
+    let xml; try { xml = await f.async('text'); } catch(e) { continue; }
+    // Flatten newlines so multi-line tags are matched by simple regex
+    const flat = xml.replace(/[\r\n\t]+/g,' ');
+
+    const spreadSelf = (/<Spread[^>]+Self="([^"]+)"/.exec(flat)||[])[1];
+    if (!spreadSelf) continue;
+
+    // ── Pages ──
+    const pages = [];
+    const pgRe = /<Page\s+([^>]*?)(?:\s*\/>|\s*>)/g;
+    let pm;
+    while ((pm = pgRe.exec(flat)) !== null) {
+      const a = pm[1];
+      const gbM = a.match(/GeometricBounds="([^"]+)"/);
+      const itM = a.match(/ItemTransform="([^"]+)"/);
+      if (!gbM) continue;
+      const gb = gbM[1].split(/\s+/).map(Number);
+      const it = itM ? itM[1].split(/\s+/).map(Number) : [1,0,0,1,0,0];
+      if (gb.length >= 4)
+        pages.push({ top:gb[0], left:gb[1], bottom:gb[2], right:gb[3], tx:it[4]||0, ty:it[5]||0 });
+    }
+    res.spreadPageGeometry[spreadSelf] = pages;
+
+    // ── TextFrames ──
+    // Try GeometricBounds attribute first; fall back to PathPointArray (newer IDML)
+    const tfRe = /<TextFrame\s+([^>]*?)(?:\s*\/>|\s*>)/g;
+    let tm;
+    while ((tm = tfRe.exec(flat)) !== null) {
+      const a = tm[1];
+      const selfM  = a.match(/\bSelf="([^"]+)"/);
+      if (!selfM) continue;
+      const itM    = a.match(/ItemTransform="([^"]+)"/);
+      const storyM = a.match(/ParentStory="([^"]+)"/);
+      const gbM    = a.match(/GeometricBounds="([^"]+)"/);
+      let boundsStr = gbM ? gbM[1] : null;
+
+      if (!boundsStr) {
+        // Derive bounds from PathPointArray within next ~3000 chars of this tag
+        const after = flat.slice(tm.index + tm[0].length, tm.index + tm[0].length + 3000);
+        const anchors = [];
+        const aRe2 = /\bAnchor="([^"]+)"/g;
+        let am2;
+        while ((am2 = aRe2.exec(after)) !== null) {
+          const pts = am2[1].split(/\s+/).map(Number);
+          if (pts.length >= 2 && !isNaN(pts[0]) && !isNaN(pts[1])) anchors.push(pts);
+        }
+        if (anchors.length >= 2) {
+          const xs = anchors.map(p => p[0]), ys = anchors.map(p => p[1]);
+          boundsStr = `${Math.min(...ys)} ${Math.min(...xs)} ${Math.max(...ys)} ${Math.max(...xs)}`;
+        }
+      }
+
+      if (boundsStr) {
+        const fillM = a.match(/FillColor="([^"]+)"/);
+        const fillV = fillM ? fillM[1] : '';
+        const isBox = !!(fillV && fillV !== 'Paper' && fillV !== 'None' &&
+                         !fillV.includes('C=0 M=0 Y=0 K=0'));
+        res.rawFrameGeo[selfM[1]] = {
+          bounds:    boundsStr,
+          transform: itM    ? itM[1]    : '1 0 0 1 0 0',
+          storyRef:  storyM ? storyM[1] : null,
+          type: 'text',
+          isBox,
+          fillColor: fillV,
+          spreadId: spreadSelf,
+        };
+      }
+    }
+
+    // ── Rectangles (image frames) ──
+    // Rectangle may contain a nested Link element — capture up to 600 chars
+    const rectRe = /<Rectangle\s+([^>]*?)(?:\s*\/>|\s*>)((?:.|\n){0,600}?(?=<(?:TextFrame|Page|Rectangle|Spread|\/Spread)))?/g;
+    let rm;
+    while ((rm = rectRe.exec(flat)) !== null) {
+      const a = rm[1];
+      const inner = rm[2] || '';
+      const selfM = a.match(/\bSelf="([^"]+)"/);
+      const gbM   = a.match(/GeometricBounds="([^"]+)"/);
+      const itM   = a.match(/ItemTransform="([^"]+)"/);
+      const linkM = inner.match(/LinkResourceURI="([^"]+)"/);
+      if (selfM && gbM) {
+        const uri = linkM ? linkM[1] : '';
+        const fname = uri ? decodeURIComponent(uri.split('/').pop().split('\\').pop()) : '';
+        res.rawFrameGeo[selfM[1]] = {
+          bounds:    gbM[1],
+          transform: itM ? itM[1] : '1 0 0 1 0 0',
+          filename: /\.(png|jpe?g|gif|svg|eps|tiff?|bmp)$/i.test(fname) ? fname : null,
+          type: 'image',
+          spreadId: spreadSelf,
+        };
+      }
+    }
+  }
+
+  // ── Groups (vector diagrams / flowcharts) ── extract as inline SVG ──────────
+  // Groups are InDesign-drawn vector objects; we parse their shapes and emit SVG.
+  res.rawGroupGeo = res.rawGroupGeo || {};
+
+  // Resolve CMYK/swatch color names to CSS rgb()
+  function idmlColor(name) {
+    if (!name || name === 'None') return 'none';
+    if (name === 'Paper') return '#fff';
+    if (name === 'Black' || name.includes('K=100')) return '#000';
+    if (name === 'White') return '#fff';
+    const m = name.match(/C=(\d+(?:\.\d+)?)\s+M=(\d+(?:\.\d+)?)\s+Y=(\d+(?:\.\d+)?)\s+K=(\d+(?:\.\d+)?)/i);
+    if (m) {
+      const c=+m[1]/100, mv=+m[2]/100, y=+m[3]/100, k=+m[4]/100;
+      return `rgb(${Math.round(255*(1-c)*(1-k))},${Math.round(255*(1-mv)*(1-k))},${Math.round(255*(1-y)*(1-k))})`;
+    }
+    return '#555';
+  }
+
+  // Convert an InDesign PathPointArray string region to SVG path data
+  function pathPointsToSVGd(region, closePath) {
+    const pts = [];
+    const pr = /Anchor="([^"]+)"\s+LeftDirection="([^"]+)"\s+RightDirection="([^"]+)"/g;
+    let pm2;
+    while ((pm2 = pr.exec(region)) !== null) {
+      const anc = pm2[1].split(/\s+/).map(Number);
+      const ld  = pm2[2].split(/\s+/).map(Number);
+      const rd  = pm2[3].split(/\s+/).map(Number);
+      pts.push({ ax:anc[0],ay:anc[1], lx:ld[0],ly:ld[1], rx:rd[0],ry:rd[1] });
+    }
+    if (pts.length < 1) return '';
+    let d = `M ${pts[0].ax},${pts[0].ay}`;
+    const n = pts.length;
+    for (let i = 0; i < n - 1 + (closePath ? 1 : 0); i++) {
+      const cur  = pts[i % n];
+      const next = pts[(i+1) % n];
+      const straight = cur.rx===cur.ax && cur.ry===cur.ay && next.lx===next.ax && next.ly===next.ay;
+      if (straight) d += ` L ${next.ax},${next.ay}`;
+      else d += ` C ${cur.rx},${cur.ry} ${next.lx},${next.ly} ${next.ax},${next.ay}`;
+    }
+    if (closePath) d += ' Z';
+    return d;
+  }
+
+  // For each spread, find Group elements and convert to SVG
+  for (const f of zip.file(/^Spreads\/Spread_.*\.xml$/)) {
+    let xml2; try { xml2 = await f.async('text'); } catch(e) { continue; }
+    const flat2 = xml2.replace(/[\r\n\t]+/g,' ');
+    const spreadSelf2 = (/<Spread[^>]+Self="([^"]+)"/.exec(flat2)||[])[1];
+    if (!spreadSelf2) continue;
+
+    // Match top-level Group opening tags (only direct children of Spread)
+    // We capture each Group by finding its Self ID and then parsing its content
+    const grpTagRe = /<Group\s+([^>]*?)(?:\s*>)/g;
+    let gm;
+    while ((gm = grpTagRe.exec(flat2)) !== null) {
+      const gAttrs = gm[1];
+      const selfM2 = gAttrs.match(/\bSelf="([^"]+)"/);
+      if (!selfM2) continue;
+      const gId = selfM2[1];
+      const itM2 = gAttrs.match(/ItemTransform="([^"]+)"/);
+      const it2 = itM2 ? itM2[1].split(/\s+/).map(Number) : [1,0,0,1,0,0];
+      const tx2 = it2[4]||0, ty2 = it2[5]||0;
+
+      // Grab the Group body (up to 8000 chars — enough for most diagrams)
+      const bodyStart = gm.index + gm[0].length;
+      const body = flat2.slice(bodyStart, bodyStart + 8000);
+
+      // Collect all PathPointArrays across child shapes (skip TextFrame paths)
+      // to determine bounding box
+      const allAnchors = [];
+      const noTF = body.replace(/<TextFrame[\s\S]*?(?:<\/TextFrame>|(?=<(?:Polygon|Rectangle|Oval|Path|GraphicLine|Group|\/Group)))/g,' ');
+      const anchRe = /Anchor="([^"]+)"/g;
+      let ar;
+      while ((ar = anchRe.exec(noTF)) !== null) {
+        const pp = ar[1].split(/\s+/).map(Number);
+        if (pp.length >= 2 && !isNaN(pp[0])) allAnchors.push(pp);
+      }
+      if (allAnchors.length < 2) continue;
+
+      const xs2 = allAnchors.map(p=>p[0]+tx2), ys2 = allAnchors.map(p=>p[1]+ty2);
+      const minX2=Math.min(...xs2), maxX2=Math.max(...xs2);
+      const minY2=Math.min(...ys2), maxY2=Math.max(...ys2);
+      const gW = maxX2-minX2, gH = maxY2-minY2;
+      if (gW < 10 || gH < 10) continue;
+
+      // Build SVG elements for each child shape
+      const svgParts = [];
+      const shapeRe = /<(Polygon|Rectangle|Oval|GraphicLine|Path)\s+([^>]*?)(?:\s*\/>|\s*>)/g;
+      let sm;
+      while ((sm = shapeRe.exec(noTF)) !== null) {
+        const tag2  = sm[1];
+        const sAttr = sm[2];
+        const fillN  = (sAttr.match(/FillColor="([^"]+)"/) || [])[1] || 'None';
+        const strkN  = (sAttr.match(/StrokeColor="([^"]+)"/) || [])[1] || 'None';
+        const strkW  = parseFloat((sAttr.match(/StrokeWeight="([^"]+)"/) || [])[1] || '1');
+        const sItM   = sAttr.match(/ItemTransform="([^"]+)"/);
+        const sIt    = sItM ? sItM[1].split(/\s+/).map(Number) : [1,0,0,1,0,0];
+        const stx=sIt[4]||0, sty=sIt[5]||0;
+
+        const fill   = idmlColor(fillN);
+        const stroke = idmlColor(strkN);
+
+        // Find PathPointArray after this shape tag
+        const shpEnd = sm.index + sm[0].length;
+        const shpBody = noTF.slice(shpEnd, shpEnd + 2000);
+        const closePath = !(/<GeometryPathType[^>]*PathOpen="true"/.test(shpBody));
+        const svgD = pathPointsToSVGd(shpBody, closePath);
+        if (!svgD) continue;
+
+        // Translate path to viewBox-relative coords
+        const xlate = `translate(${(tx2+stx)-minX2},${(ty2+sty)-minY2})`;
+        svgParts.push(`<path transform="${xlate}" d="${svgD}" fill="${fill}" stroke="${stroke}" stroke-width="${strkW}" stroke-linejoin="round"/>`);
+      }
+
+      // Add text labels from TextFrame children as foreignObject elements
+      const tfLabelRe = /<TextFrame\s+([^>]*?)(?:\s*\/>|\s*>)/g;
+      let tlm;
+      while ((tlm = tfLabelRe.exec(body)) !== null) {
+        const ta = tlm[1];
+        const tbGbM = ta.match(/GeometricBounds="([^"]+)"/);
+        const tbItM = ta.match(/ItemTransform="([^"]+)"/);
+        const tbStM = ta.match(/ParentStory="([^"]+)"/);
+        if (!tbGbM || !tbStM) continue;
+        const gb3 = tbGbM[1].split(/\s+/).map(Number);
+        const tbit = tbItM ? tbItM[1].split(/\s+/).map(Number) : [1,0,0,1,0,0];
+        const lx = gb3[1]+(tbit[4]||0)+tx2-minX2;
+        const ly = gb3[0]+(tbit[5]||0)+ty2-minY2;
+        const lw = gb3[3]-gb3[1];
+        const lh = gb3[2]-gb3[0];
+        svgParts.push(`<foreignObject x="${lx}" y="${ly}" width="${lw}" height="${lh}" overflow="visible"><div xmlns="http://www.w3.org/1999/xhtml" style="font-size:7pt;text-align:center;font-family:sans-serif;color:#1a1a1a;line-height:1.2">${tbStM[1]}</div></foreignObject>`);
+      }
+
+      if (!svgParts.length) continue;
+
+      const pad = 4;
+      const vb = `${-pad} ${-pad} ${gW+pad*2} ${gH+pad*2}`;
+      const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}" width="${Math.round(gW)}" height="${Math.round(gH)}" style="max-width:100%;height:auto;display:block;margin:0 auto">\n${svgParts.join('\n')}\n</svg>`;
+
+      res.rawGroupGeo[gId] = {
+        bounds:    `${minY2} ${minX2} ${maxY2} ${maxX2}`,
+        transform: itM2 ? itM2[1] : '1 0 0 1 0 0',
+        type: 'diagram',
+        svg: svgStr,
+        spreadId: spreadSelf2,
+      };
+    }
+  }
+
+  // Add diagram groups to each spread's frame list
+  res.spreads.forEach(sp => {
+    Object.values(res.rawGroupGeo).forEach(g => {
+      if (g.spreadId !== sp.id) return;
+      const alreadyIn = sp.frames.some(f => f.type === 'diagram' && f.bounds === g.bounds);
+      if (!alreadyIn) {
+        sp.frames.push({ id: `grp_${Math.random().toString(36).slice(2)}`, type: 'diagram', bounds: g.bounds, transform: g.transform, svg: g.svg });
+      }
+    });
+  });
+
+  // Back-fill spread.frames with raw geometry where bounds are missing
+  res.spreads.forEach(sp => {
+    sp.frames.forEach(f => {
+      const raw = res.rawFrameGeo[f.id];
+      if (raw) {
+        if (!f.bounds)    f.bounds    = raw.bounds;
+        if (!f.transform) f.transform = raw.transform;
+        if (!f.storyRef && raw.storyRef) f.storyRef = raw.storyRef;
+        if (raw.isBox)    f.isBox     = true;
+        if (raw.fillColor) f.fillColor = raw.fillColor;
+      }
+    });
   });
 
   return res;
@@ -2659,14 +2955,14 @@ function collectFrames(node,frames) {
     const items=node[type]; if(!items) return;
     (Array.isArray(items)?items:[items]).forEach(item=>{
       if(type==='TextFrame'&&item['@_Self'])
-        frames.push({id:item['@_Self'],storyRef:item['@_ParentStory'],next:item['@_NextTextFrame'],prev:item['@_PreviousTextFrame']});
+        frames.push({id:item['@_Self'],storyRef:item['@_ParentStory'],next:item['@_NextTextFrame'],prev:item['@_PreviousTextFrame'],bounds:item['@_GeometricBounds']||'',transform:item['@_ItemTransform']||''});
       if((type==='Rectangle'||type==='Oval'||type==='Polygon')&&item['@_Self']) {
         // Image frame: has a Link child
         const lnk = item['Link'];
         const linkId = lnk ? (Array.isArray(lnk)?lnk[0]:lnk)['@_Self'] : null;
         const linkUri = lnk ? ((Array.isArray(lnk)?lnk[0]:lnk)['@_LinkResourceURI']||'') : '';
         const fname = linkUri ? decodeURIComponent(linkUri.split('/').pop().split('\\').pop()) : null;
-        frames.push({id:item['@_Self'],type:'image',linkId,filename:fname,bounds:item['@_GeometricBounds']});
+        frames.push({id:item['@_Self'],type:'image',linkId,filename:fname,bounds:item['@_GeometricBounds'],transform:item['@_ItemTransform']||''});
       }
       if(type==='Group') collectFrames(item,frames);
     });
@@ -2679,6 +2975,11 @@ function mapPS(name) {
   const entries=Object.entries(STYLE_MAP.paragraphStyles);
   for(const[k,v]of entries) if(lower===k) return v;
   for(const[k,v]of entries) if(lower.includes(k)||k.includes(lower)) return v;
+  // Generic bullet/list fallback for unmapped styles
+  if (/bullet|list.?item|list.?text|\\bbullets?$/i.test(lower))
+    return {tag:'li', cls:'idml-list-bullet', listType:'ul'};
+  if (/numbered|ordered.?list|list.?num/i.test(lower))
+    return {tag:'li', cls:'idml-option', listType:'ol'};
   return {...STYLE_MAP.fallback,_unmapped:name};
 }
 function mapCS(name) {
@@ -3004,6 +3305,27 @@ function buildMeta(parsed,blocks) {
   const freq={};
   blocks.forEach(b=>{freq[b.styleName]=(freq[b.styleName]||0)+1;});
   const uniqueLinked = parsed.linkedImageFiles || [...new Set(Object.values(parsed.linkIdToFile||parsed.linkMap||{}))];
+  // Collect image frame dimensions (pt and px) for pillow_embed.py
+  const imgFrameMeta = [];
+  const seenF = new Set();
+  parsed.spreads.forEach(sp => {
+    (sp.frames||[]).forEach(f => {
+      if (f.type==='image' && f.filename && f.bounds && !seenF.has(f.filename)) {
+        seenF.add(f.filename);
+        const gb = String(f.bounds).trim().split(/\s+/).map(Number);
+        if (gb.length >= 4) {
+          const pxPerPt = 96/72;
+          imgFrameMeta.push({
+            filename: f.filename,
+            widthPt: +(gb[3]-gb[1]).toFixed(2),
+            heightPt: +(gb[2]-gb[0]).toFixed(2),
+            widthPx: Math.round((gb[3]-gb[1])*pxPerPt),
+            heightPx: Math.round((gb[2]-gb[0])*pxPerPt),
+          });
+        }
+      }
+    });
+  });
   return {
     generatedAt:new Date().toISOString(),
     storiesFound:parsed.stories.length,
@@ -3015,20 +3337,430 @@ function buildMeta(parsed,blocks) {
     paragraphStylesInDocument:Object.keys(parsed.paragraphStyles).length,
     styleUsageFrequency:freq,
     unmappedStyles:Object.keys(freq).filter(n=>mapPS(n)._unmapped),
+    imageFrames:imgFrameMeta,
   };
 }
+// ── Page layout CSS (grid-based, reflowable) ─────────────────────────────────
+const OUTPUT_LAYOUT_CSS = `/* InDesign Grid Layout — generated by IDML Pipeline */
+:root{
+  --font-body:'Georgia','Times New Roman',serif;
+  --font-head:'Arial','Helvetica Neue',sans-serif;
+  --blue:#1a3a6b;--orange:#e85d04;--text:#1a1a1a;--bg:#f0f2f5;
+  --page-w:680px;
+}
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--bg);font-family:var(--font-body);color:var(--text);font-size:10pt;line-height:1.5}
+.idml-layout-spread{display:flex;flex-direction:column;align-items:center;gap:28px;padding:32px 16px;background:var(--bg)}
+/* ── page shell ── */
+.idml-layout-page{width:var(--page-w);background:#fff;box-shadow:0 3px 18px rgba(0,0,0,.15);padding:28px 28px 32px;border-radius:2px}
+/* ── grid layout within a page ── */
+.idml-page-grid{display:grid;gap:14px 18px;align-items:start}
+.idml-page-grid.cols-1{grid-template-columns:1fr}
+.idml-page-grid.cols-2{grid-template-columns:1fr 1fr}
+.idml-page-grid.cols-3{grid-template-columns:1fr 1fr 1fr}
+.idml-col-full{grid-column:1/-1}
+/* ── text frame styling ── */
+.idml-tf p,.idml-tf .idml-body{margin:0 0 .55em}
+.idml-tf h1,.idml-tf h2,.idml-tf h3,.idml-tf h4{margin:.4em 0 .3em;line-height:1.25}
+.idml-chapter-title{font-size:1.6em;font-weight:900;background:var(--blue);color:#fff;padding:.3em .8em;border-radius:4px;display:block;margin-bottom:.5em}
+.idml-h1{font-size:1.15em;font-weight:800;background:var(--blue);color:#fff;padding:.25em .6em;border-radius:3px;margin:.5em 0 .35em}
+.idml-h2{font-size:1.05em;font-weight:700;color:var(--orange);border-bottom:2px solid var(--orange);padding-bottom:.12em;margin:.5em 0 .35em}
+.idml-h3{font-size:.97em;font-weight:700;color:var(--blue);margin:.4em 0 .2em}
+.idml-question{padding:.4em .6em;border-left:3px solid var(--blue);background:#f0f4fc;margin:.4em 0;border-radius:0 4px 4px 0}
+.idml-solution{padding:.4em .6em;border-left:3px solid #16a34a;background:#f0fdf4;color:#14532d;margin:.4em 0;border-radius:0 4px 4px 0}
+.idml-option{margin-bottom:.3em;list-style-type:upper-alpha;padding-left:.3em}
+.idml-list{margin:.35em 0 .35em 0;padding:0}
+ul,ol{margin:.35em 0 .35em 0;padding-left:1.6em}
+li{margin-bottom:.25em;padding-left:.2em}
+figure{margin:.5em 0;text-align:center}
+figcaption,.idml-caption{font-size:.82em;color:#555;font-style:italic;text-align:center;margin-top:.25em}
+/* ── image frame ── */
+.idml-if{text-align:center;margin:.4em 0}
+.idml-if img{max-width:100%;height:auto;border-radius:2px;display:inline-block}
+.img-placeholder{background:#f5f5f5;border:1.5px dashed #c0c0c0;border-radius:4px;padding:12px 8px;text-align:center;color:#999;font-size:.78em;font-family:sans-serif;min-height:60px;display:flex;align-items:center;justify-content:center;gap:6px}
+/* ── vector diagram frames ── */
+.idml-diagram{text-align:center;margin:.6em 0;padding:.4em 0}
+.idml-diagram svg{max-width:100%;height:auto;display:block;margin:0 auto}
+/* ── sidebar / box frames ── */
+.idml-sidebar{background:#f0f4fc;border-left:4px solid var(--blue);padding:.6em .8em;border-radius:0 4px 4px 0;margin:.3em 0}
+.idml-box{background:#eef2fb;border:1.5px solid #c5d3ee;border-radius:5px;padding:.7em 1em;margin:.4em 0}
+.idml-box .idml-h1,.idml-box .idml-h2{background:var(--blue);color:#fff;padding:.2em .5em;border-radius:3px;margin-bottom:.35em}
+/* ── page number / small frames ── */
+.idml-page-num{font-size:.75em;color:#888;text-align:right;margin-bottom:.4em}
+sup,sub{font-size:.7em;line-height:0}strong{font-weight:700}em{font-style:italic}
+.idml-divider{border:none;border-top:1px solid #dde;margin:10px 0}
+@media(max-width:740px){:root{--page-w:100%}.idml-layout-page{padding:16px}.idml-page-grid.cols-2,.idml-page-grid.cols-3{grid-template-columns:1fr}}
+@media print{body{background:#fff}.idml-layout-spread{padding:0;gap:0}.idml-layout-page{box-shadow:none;page-break-after:always;width:100%}}
+`;
+
+// ── Order threaded text frames by prev→next chain ────────────────────────────
+function orderFrameChain(frames) {
+  const byId = {};
+  frames.forEach(f => { byId[f.id] = f; });
+  let first = frames.find(f => !f.prev || f.prev === 'n') || frames[0];
+  const ordered = [], seen = new Set();
+  let cur = first;
+  while (cur && !seen.has(cur.id)) {
+    ordered.push(cur); seen.add(cur.id);
+    cur = byId[cur.next] || null;
+  }
+  frames.forEach(f => { if (!seen.has(f.id)) ordered.push(f); });
+  return ordered;
+}
+
+// ── Classify a frame's column role based on its x-position ──────────────────
+function frameColRole(rl, fw, pgW) {
+  const cx = rl + fw / 2;
+  if (fw >= pgW * 0.72) return 'full';      // spans nearly the full width
+  if (cx < pgW * 0.42) return 'left';
+  if (cx > pgW * 0.58) return 'right';
+  return 'full';
+}
+
+// ── Build page-layout HTML — CSS Grid, reflowable ────────────────────────────
+function buildPageLayoutHTML(parsed) {
+  const stories = {};
+  parsed.stories.forEach(s => stories[s.id] = s);
+
+  // Track which stories have been rendered (to avoid duplicating threaded text)
+  const renderedStories = new Set();
+  const renderedFrames  = new Set();
+  const pageNodes = [];
+
+  for (const spread of parsed.spreads) {
+    const pgGeo   = (parsed.spreadPageGeometry||{})[spread.id] || [];
+    const frames  = spread.frames || [];
+
+    // Compute spread coords for every frame in this spread
+    const frameData = [];
+    for (const frame of frames) {
+      if (!frame.bounds) continue;
+      const gb = String(frame.bounds).trim().split(/\s+/).map(Number);
+      if (gb.length < 4 || isNaN(gb[0])) continue;
+      const it = frame.transform ? String(frame.transform).trim().split(/\s+/).map(Number) : [1,0,0,1,0,0];
+      frameData.push({
+        frame,
+        top:    gb[0] + (it[5]||0),
+        left:   gb[1] + (it[4]||0),
+        bottom: gb[2] + (it[5]||0),
+        right:  gb[3] + (it[4]||0),
+      });
+    }
+
+    for (const pg of pgGeo) {
+      const pgW = Math.round(pg.right - pg.left);
+      const pgH = Math.round(pg.bottom - pg.top);
+      if (pgW < 10 || pgH < 10) continue;
+
+      // Pick origin: prefer pg.left+pg.tx (handles page-local GB + ItemTransform)
+      const origins = [
+        { ol: pg.left,       ot: pg.top       },
+        { ol: pg.left+pg.tx, ot: pg.top+pg.ty },
+      ];
+      let bestOrigin = origins[0], bestCount = -1;
+      for (const o of origins) {
+        let c = 0;
+        for (const {left, top, right, bottom} of frameData) {
+          const cx = left + (right-left)/2 - o.ol;
+          const cy = top  + (bottom-top)/2 - o.ot;
+          if (cx >= 0 && cx <= pgW && cy >= 0 && cy <= pgH) c++;
+        }
+        if (c >= bestCount) { bestCount = c; bestOrigin = o; }
+      }
+      const { ol: pL, ot: pT } = bestOrigin;
+
+      // Collect frames that belong to this page, with page-relative coords
+      const pageFrames = [];
+      for (const {frame, top, left, bottom, right} of frameData) {
+        if (renderedFrames.has(frame.id)) continue;
+        const rl = left   - pL;
+        const rt = top    - pT;
+        const fw = right  - left;
+        const fh = bottom - top;
+        if (fw < 4 || fh < 4) continue;
+        const cx = rl + fw/2, cy = rt + fh/2;
+        if (cx < 0 || cx > pgW || cy < 0 || cy > pgH) continue;
+        pageFrames.push({ frame, rl, rt, fw, fh });
+      }
+
+      if (!pageFrames.length) continue;  // skip fully empty pages silently
+
+      // Sort into reading order: top→bottom, left→right within same row band
+      pageFrames.sort((a, b) => {
+        const rowTol = pgH * 0.04;  // 4% of page height = same row
+        const rowA = Math.round(a.rt / rowTol), rowB = Math.round(b.rt / rowTol);
+        if (rowA !== rowB) return rowA - rowB;
+        return a.rl - b.rl;
+      });
+
+      // Detect column count: if distinct left/right frames exist → 2-col
+      const roles = pageFrames.map(pf => frameColRole(pf.rl, pf.fw, pgW));
+      const hasLeft  = roles.includes('left');
+      const hasRight = roles.includes('right');
+      const colCount = (hasLeft && hasRight) ? 2 : 1;
+
+      // Render each frame as a grid item
+      const gridItems = [];
+      for (let i = 0; i < pageFrames.length; i++) {
+        const { frame, rl, rt, fw, fh } = pageFrames[i];
+        const role = roles[i];
+        const colClass = (colCount === 2 && role !== 'full') ? '' : 'idml-col-full';
+
+        let inner = '';
+        if (frame.storyRef && stories[frame.storyRef]) {
+          const sid = frame.storyRef;
+          const story = stories[sid];
+          // If story already rendered, show nothing (threaded continuation handled by ordering)
+          if (!renderedStories.has(sid)) {
+            renderedStories.add(sid);
+            renderedFrames.add(frame.id);
+            inner = blocksToHTML(story.blocks).join('\n');
+          } else {
+            renderedFrames.add(frame.id);
+            continue;  // skip duplicate
+          }
+        } else if (frame.type === 'image') {
+          renderedFrames.add(frame.id);
+          const fname = frame.filename || '';
+          const src = fname ? (findImage(fname)||'') : '';
+          if (src) {
+            inner = `<img src="${src}" alt="${esc(fname)}" style="max-width:100%;height:auto"/>`;
+          } else if (fname) {
+            inner = `<div class="img-placeholder">📷 ${esc(fname)}</div>`;
+          } else {
+            continue;
+          }
+          const wrapCls = `idml-if ${colClass}`.trim();
+          gridItems.push(`<div class="${wrapCls}">${inner}</div>`);
+          continue;
+        } else if (frame.type === 'diagram') {
+          renderedFrames.add(frame.id);
+          if (!frame.svg) continue;
+          const wrapCls = `idml-diagram ${colClass}`.trim();
+          gridItems.push(`<div class="${wrapCls}">${frame.svg}</div>`);
+          continue;
+        } else {
+          renderedFrames.add(frame.id);
+          continue;
+        }
+
+        if (!inner.trim()) continue;
+
+        // Classify frame visually
+        const isSidebar  = frame.isBox || (fw < pgW * 0.35 && fh < pgH * 0.25);
+        const isPageNum  = fw < pgW * 0.2  && fh < pgH * 0.08;
+        let frameCls = 'idml-tf';
+        if (isPageNum)  frameCls = 'idml-page-num';
+        else if (frame.isBox) frameCls = 'idml-tf idml-box';
+        else if (isSidebar)   frameCls = 'idml-tf idml-sidebar';
+
+        gridItems.push(`<div class="${(frameCls+' '+colClass).trim()}">${inner}</div>`);
+      }
+
+      if (!gridItems.length) continue;
+
+      const gridCls = `idml-page-grid cols-${colCount}`;
+      pageNodes.push(
+        `<div class="idml-layout-page">\n` +
+        `<div class="${gridCls}">\n${gridItems.join('\n')}\n</div>\n` +
+        `</div>`
+      );
+    }
+  }
+  return pageNodes;
+}
+
+// ── Pillow companion script (bundled in ZIP) ─────────────────────────────────
+const PILLOW_SCRIPT = `#!/usr/bin/env python3
+"""
+pillow_embed.py  —  Embed images into converted HTML using Pillow.
+
+Reads the exported HTML, finds placeholder divs (or bare img src paths),
+processes each image with Pillow (format conversion, dimension-preserving
+resize from metadata.json frame bounds), and embeds them as base64.
+
+Requirements:
+    pip install pillow beautifulsoup4
+
+Usage:
+    python scripts/pillow_embed.py index.html
+    python scripts/pillow_embed.py index.html output.html --images-dir ./images
+"""
+import sys, os, base64, json, re
+from io import BytesIO
+from pathlib import Path
+
+try:
+    from PIL import Image
+except ImportError:
+    print("ERROR: Pillow not found.  Run: pip install pillow"); sys.exit(1)
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    print("ERROR: beautifulsoup4 not found.  Run: pip install beautifulsoup4"); sys.exit(1)
+
+
+def find_image(images_dir, fname):
+    images_dir = Path(images_dir)
+    if not images_dir.is_dir():
+        return None
+    exact = images_dir / fname
+    if exact.exists():
+        return exact
+    fl = fname.lower()
+    for p in images_dir.iterdir():
+        if p.name.lower() == fl:
+            return p
+    stem = Path(fname).stem.lower()
+    for p in images_dir.iterdir():
+        if p.stem.lower() == stem:
+            return p
+    return None
+
+
+def img_to_b64(img):
+    fmt = 'PNG' if img.mode == 'RGBA' else 'JPEG'
+    buf = BytesIO()
+    if fmt == 'JPEG':
+        img.save(buf, 'JPEG', quality=92, optimize=True, subsampling=0)
+    else:
+        img.save(buf, 'PNG', optimize=True)
+    mime = 'image/png' if fmt == 'PNG' else 'image/jpeg'
+    return mime, base64.b64encode(buf.getvalue()).decode()
+
+
+def process_image(img_path, target_w=None, target_h=None):
+    """Open with Pillow, convert mode, optionally resize to frame bounds."""
+    img = Image.open(img_path)
+    # Convert problematic modes
+    if img.mode == 'CMYK':
+        img = img.convert('RGB')
+    elif img.mode == 'P':
+        img = img.convert('RGBA' if 'transparency' in img.info else 'RGB')
+    elif img.mode == 'LA':
+        img = img.convert('RGBA')
+    elif img.mode == '1':
+        img = img.convert('L')
+
+    # Resize to frame dimensions (preserving aspect ratio inside the frame)
+    if target_w and target_h:
+        img.thumbnail((target_w, target_h), Image.LANCZOS)
+
+    return img
+
+
+def main(html_path, output_path=None, images_dir=None):
+    html_path = Path(html_path).resolve()
+    if output_path is None:
+        output_path = html_path.with_stem(html_path.stem + '_embedded')
+    if images_dir is None:
+        images_dir = html_path.parent / 'images'
+
+    with open(html_path, encoding='utf-8') as f:
+        html = f.read()
+
+    soup = BeautifulSoup(html, 'html.parser')
+
+    # Load InDesign frame dimensions from metadata.json
+    frame_dims = {}
+    meta_path = html_path.parent / 'metadata.json'
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding='utf-8'))
+            for fr in meta.get('imageFrames', []):
+                if fr.get('filename'):
+                    frame_dims[fr['filename']] = (fr.get('widthPx'), fr.get('heightPx'))
+        except Exception as e:
+            print(f"  Warning: could not read metadata.json: {e}")
+
+    embedded = skipped = failed = 0
+
+    # 1. Replace <div class="img-placeholder"> with embedded <img>
+    for div in soup.find_all('div', class_='img-placeholder'):
+        raw = div.get_text(strip=True).replace('\\U0001f4f7','').replace('\\U0001F4F7','').strip()
+        # Strip emoji characters
+        fname = re.sub(r'[^\\x20-\\x7E]', '', raw).strip()
+        img_path = find_image(images_dir, fname)
+        if not img_path:
+            print(f"  ✗ Not found: {fname}")
+            failed += 1; continue
+        try:
+            tw, th = frame_dims.get(fname, (None, None))
+            img = process_image(img_path, tw, th)
+            mime, b64 = img_to_b64(img)
+            w, h = img.size
+            new_tag = soup.new_tag('img',
+                src=f'data:{mime};base64,{b64}',
+                alt=fname, width=w, height=h,
+                style='max-width:100%;height:auto;display:block;margin:0 auto')
+            div.replace_with(new_tag)
+            print(f"  ✓ {fname}  ({w}\\u00d7{h}  {mime.split('/')[1].upper()})")
+            embedded += 1
+        except Exception as e:
+            print(f"  ✗ Error on {fname}: {e}"); failed += 1
+
+    # 2. Replace non-base64 img src paths with embedded data URLs
+    for tag in soup.find_all('img'):
+        src = tag.get('src', '')
+        if src.startswith('data:'):
+            continue
+        fname = os.path.basename(src)
+        img_path = find_image(images_dir, fname)
+        if not img_path:
+            skipped += 1; continue
+        try:
+            tw, th = frame_dims.get(fname, (None, None))
+            img = process_image(img_path, tw, th)
+            mime, b64 = img_to_b64(img)
+            w, h = img.size
+            tag['src'] = f'data:{mime};base64,{b64}'
+            tag['width'] = w; tag['height'] = h
+            tag['style'] = 'max-width:100%;height:auto;display:block;margin:0 auto'
+            print(f"  ✓ {fname}  ({w}\\u00d7{h})")
+            embedded += 1
+        except Exception as e:
+            print(f"  ✗ Error on {fname}: {e}"); failed += 1
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(str(soup))
+
+    print(f"\\nDone: {embedded} embedded  {failed} failed  {skipped} skipped  →  {output_path}")
+
+
+if __name__ == '__main__':
+    args = sys.argv[1:]
+    if not args:
+        print(__doc__); sys.exit(0)
+    html_p = args[0]
+    out_p  = args[1] if len(args) > 1 and not args[1].startswith('--') else None
+    img_d  = None
+    for i, a in enumerate(args):
+        if a == '--images-dir' and i+1 < len(args):
+            img_d = args[i+1]
+    main(html_p, out_p, img_d)
+`;
+
 async function buildIDMLZip(parsed,title) {
   const blocks=getOrderedBlocks(parsed);
-  const nodes=blocksToHTML(blocks);
   const meta=buildMeta(parsed,blocks);
+  const useLayout = $('chk-page-layout')?.checked && parsed.spreadPageGeometry && Object.keys(parsed.spreadPageGeometry).length > 0;
+
+  let htmlBody, usedCSS;
+  if (useLayout) {
+    const pageNodes = buildPageLayoutHTML(parsed);
+    htmlBody = `<div class="idml-layout-spread">\n${pageNodes.join('\n')}\n</div>`;
+    usedCSS = OUTPUT_LAYOUT_CSS;
+  } else {
+    const nodes = blocksToHTML(blocks);
+    htmlBody = nodes.join('\n');
+    usedCSS = OUTPUT_CSS;
+  }
 
   const linkedFiles = meta.linkedImageFiles || [];
-
-  // Split into matched (embedded) vs unmatched (still needed)
   const matched   = linkedFiles.filter(f => findImage(f));
   const unmatched = linkedFiles.filter(f => !findImage(f));
 
-  // Only write manifest for files that couldn't be embedded
   let manifestLines = '';
   if(unmatched.length > 0){
     manifestLines = [
@@ -3042,26 +3774,31 @@ async function buildIDMLZip(parsed,title) {
     ].join('\n');
   }
 
-  // Images are embedded as base64 in the HTML via blocksToHTML/findImage()
-  let htmlBody=nodes.join('\n');
-
-  const html=`<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8"/>\n<meta name="viewport" content="width=device-width,initial-scale=1.0"/>\n<title>${esc(title)}</title>\n<style>\n${OUTPUT_CSS}\n</style>\n</head>\n<body>\n<main class="idml-page">\n\n${htmlBody}\n\n</main>\n</body>\n</html>`;
+  const html=`<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8"/>\n<meta name="viewport" content="width=device-width,initial-scale=1.0"/>\n<title>${esc(title)}</title>\n<style>\n${usedCSS}\n</style>\n</head>\n<body>\n${useLayout?'':'<main class="idml-page">\n\n'}${htmlBody}${useLayout?'':'\n\n</main>'}\n</body>\n</html>`;
 
   const zip=new JSZip();
   zip.file('index.html',html);
-  zip.file('styles.css',OUTPUT_CSS);
+  zip.file('styles.css',usedCSS);
   zip.file('metadata.json',JSON.stringify(meta,null,2));
   zip.file('style-map.json',JSON.stringify({_note:"Edit paragraphStyles/characterStyles to improve mapping.",paragraphStyles:STYLE_MAP.paragraphStyles,characterStyles:STYLE_MAP.characterStyles,fallback:STYLE_MAP.fallback},null,2));
+  // Bundle Pillow image-embedding script
+  zip.folder('scripts').file('pillow_embed.py', PILLOW_SCRIPT);
+  zip.folder('scripts').file('README.txt',
+    'pillow_embed.py — embed missing images into index.html using Pillow.\n\n' +
+    'Requirements:\n  pip install pillow beautifulsoup4\n\n' +
+    'Usage:\n  python scripts/pillow_embed.py index.html\n\n' +
+    'Place your image files in the images/ folder first.\n' +
+    'The script reads metadata.json for InDesign frame dimensions\n' +
+    'and resizes each image to fit its original frame without\n' +
+    'disturbing the page layout.\n'
+  );
 
-  // Write manifest only if some images are still missing
   if(unmatched.length > 0){
     zip.file('MISSING-IMAGES.txt', manifestLines);
   }
 
   const imgF=zip.folder('images');
-  // Copy any embedded images from the IDML package itself
   for(const img of parsed.images){try{imgF.file(img.name,await img.file.async('uint8array'));}catch(e){}}
-  // Also copy uploaded image files into images/ folder (for external reference if needed)
   for(const [fname, dataURL] of Object.entries(imageFiles)){
     try{
       const b64 = dataURL.split(',')[1];
