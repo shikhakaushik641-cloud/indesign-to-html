@@ -2191,7 +2191,7 @@ h1,h2,h3,h4{font-family:var(--font-head);line-height:1.2;margin-top:1.75em;margi
 .idml-unstyled{margin:0 0 .7em;color:var(--text-light)}
 
 /* ── LISTS ── */
-.idml-list{margin:.6em 0 .6em 1.75em;padding:0}
+.idml-list{margin:.6em 0 .6em 0;padding-left:1.75em}
 .idml-list-bullet{margin-bottom:.4em;padding-left:.25em}
 .idml-list-number{margin-bottom:.4em}
 
@@ -2334,6 +2334,18 @@ sup,sub{font-size:.72em;line-height:0}
 /* ── ANSWER KEY NUMBERED ── */
 .idml-answer-key ol,.idml-answer-key ul{margin:.4em 0 0 1.25em;padding:0}
 .idml-answer-key li{margin-bottom:.35em}
+
+/* ── BOX frames (colored InDesign TextFrames) ── */
+.idml-box{background:#eef2fb;border:1.5px solid #c5d3ee;border-radius:5px;padding:.7em 1.1em;margin:.6em 0}
+.idml-box h1,.idml-box h2,.idml-box h3{color:var(--blue-mid,#1e4d8c);margin-top:.3em}
+.idml-box ul,.idml-box ol{padding-left:1.5em}
+
+/* ── Inline SVG diagrams / flowcharts ── */
+.idml-diagram-fig{margin:1.2em 0;text-align:center}
+.idml-diagram-fig svg{max-width:100%;height:auto;display:inline-block}
+
+/* ── Image placeholder ── */
+.img-placeholder{background:#f5f5f5;border:1.5px dashed #c0c0c0;border-radius:4px;padding:12px 8px;text-align:center;color:#999;font-size:.78em;font-family:sans-serif;min-height:60px;display:flex;align-items:center;justify-content:center;gap:6px}
 
 @media print{body{padding:0;font-size:11pt}.idml-h1,.idml-chapter-title{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 `;
@@ -3025,9 +3037,10 @@ function getOrderedBlocks(parsed) {
   for(const spread of parsed.spreads){
     const frames=spread.frames||[];
 
-    // Separate text-frame chains from standalone image frames
+    // Separate text-frame chains from standalone image/diagram frames
     const textFrameStarts=frames.filter(f=>f.storyRef&&(!f.prev||!fm[f.prev]));
     const imageFrames=frames.filter(f=>f.type==='image'&&f.filename);
+    const diagramFrames=frames.filter(f=>f.type==='diagram'&&f.svg);
 
     // Collect text-frame chains with their Y-position (top of GeometricBounds)
     const textChains=[]; // [{yTop, blocks:[]}]
@@ -3038,10 +3051,18 @@ function getOrderedBlocks(parsed) {
       if(sid&&!visitedStories.has(sid)){
         visitedStories.add(sid);
         const st=sm[sid];
-        if(st) blocks.push(...st.blocks);
+        if(st){
+          // Wrap box-frame content with _box_ markers so blocksToHTML can style it
+          if(f.isBox){
+            blocks.push({styleName:'_box_start_',spans:[]});
+            blocks.push(...st.blocks);
+            blocks.push({styleName:'_box_end_',spans:[]});
+          } else {
+            blocks.push(...st.blocks);
+          }
+        }
       }
       if(f.next&&fm[f.next]) blocks.push(...walkChain_collect(fm[f.next],visitedStories,sm));
-      // Y position: GeometricBounds = "yMin xMin yMax xMax" (InDesign coordinate string)
       const yTop=parseIDMLY(f.bounds);
       textChains.push({yTop,blocks});
     };
@@ -3058,16 +3079,23 @@ function getOrderedBlocks(parsed) {
     const imgBlocks=imageFrames.map(f=>({
       styleName:'_image_',
       imageFile:f.filename,
-      yTop:parseIDMLY(f.bounds),
+      yTop:parseIDMLY(f.bounds)||9999,
       spans:[]
     }));
 
-    // Merge: interleave image blocks into text chains by Y position
-    // Strategy: for each image, insert it before the first text chain whose yTop > image yTop
-    // Build a flat ordered list of {yTop, items:[blocks]}
+    // Build diagram blocks for Group SVG frames
+    const dgrBlocks=diagramFrames.map(f=>({
+      styleName:'_diagram_',
+      svg:f.svg,
+      yTop:parseIDMLY(f.bounds)||9999,
+      spans:[]
+    }));
+
+    // Merge all segments by Y position (top-to-bottom reading order)
     const segments=[
       ...textChains.map(c=>({yTop:c.yTop,blocks:c.blocks})),
-      ...imgBlocks.map(ib=>({yTop:ib.yTop,blocks:[{styleName:'_image_',imageFile:ib.imageFile,spans:[]}]}))
+      ...imgBlocks.map(ib=>({yTop:ib.yTop,blocks:[{styleName:'_image_',imageFile:ib.imageFile,spans:[]}]})),
+      ...dgrBlocks.map(db=>({yTop:db.yTop,blocks:[{styleName:'_diagram_',svg:db.svg,spans:[]}]})),
     ];
     segments.sort((a,b)=>a.yTop-b.yTop);
     segments.forEach(seg=>allBlocks.push(...seg.blocks));
@@ -3214,14 +3242,36 @@ function blocksToHTML(blocks) {
   const nodes=[],lb=[]; let lt=null;
   const flush=()=>{if(!lb.length)return;nodes.push(`<${lt} class="idml-list">\n${lb.join('\n')}\n</${lt}>`);lb.length=0;lt=null;};
 
+  let inBox = false;
   for(const b of blocks){
+    // ── Box frame markers ──────────────────────────────────────────────────
+    if(b.styleName==='_box_start_'){
+      flush();
+      nodes.push('<div class="idml-box">');
+      inBox=true;
+      continue;
+    }
+    if(b.styleName==='_box_end_'){
+      flush();
+      nodes.push('</div>');
+      inBox=false;
+      continue;
+    }
+
+    // ── Diagram block (inline SVG from InDesign Group) ─────────────────────
+    if(b.styleName==='_diagram_'){
+      flush();
+      nodes.push(`<figure class="idml-diagram-fig">\n${b.svg}\n</figure>`);
+      continue;
+    }
+
     // ── Image block (detected from Rectangle inside ParagraphStyleRange) ──
     if(b.styleName==='_image_'){
       flush();
       const imgSrc = findImage(b.imageFile)||'';
       const imgTag = imgSrc
-        ? `<img src="${imgSrc}" alt="${b.imageFile}" style="max-width:100%;height:auto;display:block;margin:0 auto;border-radius:3px"/>`
-        : `<div class="img-placeholder" style="min-height:100px;background:#f0f0f0;border:1px dashed #bbb;border-radius:4px;display:flex;align-items:center;justify-content:center;color:#999;font-size:.75rem;padding:8px;text-align:center">📷 ${b.imageFile}</div>`;
+        ? `<img src="${imgSrc}" alt="${esc(b.imageFile)}" style="max-width:100%;height:auto;display:block;margin:0 auto;border-radius:3px"/>`
+        : `<div class="img-placeholder">📷 ${esc(b.imageFile)}</div>`;
       nodes.push(`<figure>\n  ${imgTag}\n</figure>`);
       continue;
     }
@@ -3369,7 +3419,7 @@ html,body{margin:0;padding:0;background:var(--bg);font-family:var(--font-body);c
 .idml-question{padding:.4em .6em;border-left:3px solid var(--blue);background:#f0f4fc;margin:.4em 0;border-radius:0 4px 4px 0}
 .idml-solution{padding:.4em .6em;border-left:3px solid #16a34a;background:#f0fdf4;color:#14532d;margin:.4em 0;border-radius:0 4px 4px 0}
 .idml-option{margin-bottom:.3em;list-style-type:upper-alpha;padding-left:.3em}
-.idml-list{margin:.35em 0 .35em 0;padding:0}
+.idml-list{margin:.35em 0 .35em 0;padding-left:1.6em}
 ul,ol{margin:.35em 0 .35em 0;padding-left:1.6em}
 li{margin-bottom:.25em;padding-left:.2em}
 figure{margin:.5em 0;text-align:center}
