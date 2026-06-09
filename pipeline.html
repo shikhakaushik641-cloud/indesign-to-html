@@ -3202,7 +3202,12 @@ function extractImageRects(node){
 
 function getRectImageFile(rect){
   if(!rect) return null;
-  const lnk = rect.Link;
+  // Link lives inside Rectangle > Image > Link (not directly in Rectangle)
+  let lnk = rect.Link;
+  if(!lnk && rect.Image){
+    const img = Array.isArray(rect.Image) ? rect.Image[0] : rect.Image;
+    lnk = img && img.Link;
+  }
   if(!lnk) return null;
   const link = Array.isArray(lnk)?lnk[0]:lnk;
   const uri = link['@_LinkResourceURI']||'';
@@ -3241,12 +3246,17 @@ function collectFrames(node,frames) {
       if(type==='TextFrame'&&item['@_Self'])
         frames.push({id:item['@_Self'],storyRef:item['@_ParentStory'],next:item['@_NextTextFrame'],prev:item['@_PreviousTextFrame'],bounds:item['@_GeometricBounds']||'',transform:item['@_ItemTransform']||''});
       if((type==='Rectangle'||type==='Oval'||type==='Polygon')&&item['@_Self']) {
-        // Image frame: has a Link child
-        const lnk = item['Link'];
+        // Link lives at Rectangle > Image > Link (not directly on Rectangle)
+        let lnk = item['Link'];
+        if(!lnk && item['Image']){
+          const img = Array.isArray(item['Image']) ? item['Image'][0] : item['Image'];
+          lnk = img && img['Link'];
+        }
         const linkId = lnk ? (Array.isArray(lnk)?lnk[0]:lnk)['@_Self'] : null;
         const linkUri = lnk ? ((Array.isArray(lnk)?lnk[0]:lnk)['@_LinkResourceURI']||'') : '';
         const fname = linkUri ? decodeURIComponent(linkUri.split('/').pop().split('\\').pop()) : null;
-        frames.push({id:item['@_Self'],type:'image',linkId,filename:fname,bounds:item['@_GeometricBounds'],transform:item['@_ItemTransform']||''});
+        if(fname)
+          frames.push({id:item['@_Self'],type:'image',linkId,filename:fname,bounds:item['@_GeometricBounds'],transform:item['@_ItemTransform']||''});
       }
       if(type==='Group') collectFrames(item,frames);
     });
