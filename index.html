@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>NGMC — InDesign / PDF to HTML Tool</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{
+  --blue:#1a3a6b;--blue-mid:#1e4d8c;--blue-light:#e8f0fb;
+  --orange:#e85d04;--orange-light:#fff3eb;
+  --green:#15803d;--green-light:#f0fdf4;
+  --ink:#0d0d0d;--text:#1a1a1a;--muted:#6b7280;--faint:#9ca3af;
+  --surface:#f9fafb;--raised:#ffffff;--border:#e5e7eb;
+  --font:'Inter','Helvetica Neue',sans-serif;
+  --radius:8px;--radius-lg:12px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{font-size:16px;scroll-behavior:smooth}
+body{font-family:var(--font);color:var(--text);background:var(--surface);line-height:1.6;min-height:100vh;display:flex;flex-direction:column}
+
+/* ── NAV ── */
+nav{
+  background:var(--raised);border-bottom:1px solid var(--border);
+  padding:.85rem 2.5rem;display:flex;align-items:center;justify-content:space-between;
+  position:sticky;top:0;z-index:50;
+}
+.nav-brand{display:flex;align-items:center;gap:.6rem}
+.nav-logo{
+  width:34px;height:34px;background:var(--blue);border-radius:var(--radius);
+  display:flex;align-items:center;justify-content:center;
+  font-size:.75rem;font-weight:700;color:#fff;letter-spacing:.02em;
+}
+.nav-title{font-size:.9rem;font-weight:600;color:var(--ink)}
+.nav-sub{font-size:.72rem;color:var(--muted)}
+.nav-right{display:flex;align-items:center;gap:.75rem}
+.nav-badge{
+  font-size:.65rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;
+  background:var(--blue-light);color:var(--blue);padding:3px 9px;border-radius:20px;
+}
+.nav-cta{
+  background:var(--blue);color:#fff;border:none;padding:.5rem 1.1rem;
+  border-radius:var(--radius);font-family:var(--font);font-size:.82rem;
+  font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;
+  align-items:center;gap:.35rem;transition:background .15s;
+}
+.nav-cta:hover{background:var(--blue-mid)}
+
+/* ── HERO ── */
+.hero{
+  background:var(--raised);padding:4.5rem 2.5rem 4rem;
+  border-bottom:1px solid var(--border);
+  display:grid;grid-template-columns:1fr auto;gap:3rem;align-items:center;
+}
+.hero-badge{
+  display:inline-flex;align-items:center;gap:.4rem;
+  background:var(--orange-light);color:var(--orange);
+  font-size:.72rem;font-weight:600;padding:4px 10px;
+  border-radius:20px;margin-bottom:1.25rem;border:1px solid #fcd9b0;
+}
+.hero-title{
+  font-size:2.75rem;font-weight:700;color:var(--ink);
+  line-height:1.12;margin-bottom:1rem;
+}
+.hero-title .accent{color:var(--blue)}
+.hero-title .accent2{color:var(--orange)}
+.hero-sub{
+  font-size:1.05rem;color:var(--muted);line-height:1.7;
+  max-width:520px;margin-bottom:2rem;
+}
+.hero-btns{display:flex;gap:.75rem;flex-wrap:wrap}
+.btn-primary{
+  background:var(--blue);color:#fff;border:none;
+  padding:.75rem 1.5rem;border-radius:var(--radius);
+  font-family:var(--font);font-size:.88rem;font-weight:600;
+  cursor:pointer;text-decoration:none;display:inline-flex;
+  align-items:center;gap:.4rem;transition:background .15s;
+}
+.btn-primary:hover{background:var(--blue-mid)}
+.btn-outline{
+  background:none;color:var(--ink);
+  border:1.5px solid var(--border);
+  padding:.75rem 1.5rem;border-radius:var(--radius);
+  font-family:var(--font);font-size:.88rem;font-weight:500;
+  cursor:pointer;text-decoration:none;display:inline-flex;
+  align-items:center;gap:.4rem;transition:all .15s;
+}
+.btn-outline:hover{border-color:var(--blue);color:var(--blue)}
+
+.hero-visual{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
+  padding:1.5rem;min-width:220px;
+}
+.hv-label{font-size:.62rem;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--faint);margin-bottom:.85rem}
+.hv-row{display:flex;align-items:center;gap:.6rem;padding:.55rem .65rem;border-radius:var(--radius);margin-bottom:.35rem;font-size:.82rem;color:var(--text)}
+.hv-row:last-child{margin-bottom:0}
+.hv-row.active{background:var(--blue-light);color:var(--blue);font-weight:600}
+.hv-row svg{width:16px;height:16px;flex-shrink:0}
+.hv-num{font-size:.62rem;font-weight:700;background:var(--border);color:var(--muted);width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.hv-row.active .hv-num{background:var(--blue);color:#fff}
+
+/* ── PIPELINE ── */
+.pipeline-section{padding:3.5rem 2.5rem;background:var(--raised);border-bottom:1px solid var(--border)}
+.sec-label{font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.15em;color:var(--faint);margin-bottom:.5rem}
+.sec-title{font-size:1.35rem;font-weight:700;color:var(--ink);margin-bottom:.5rem}
+.sec-sub{font-size:.9rem;color:var(--muted);margin-bottom:2rem}
+.pipeline{display:grid;grid-template-columns:repeat(5,1fr);gap:.75rem;align-items:start}
+.pipe-card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius-lg);padding:1.25rem 1rem;
+  position:relative;transition:border-color .15s,box-shadow .15s;
+}
+.pipe-card:hover{border-color:var(--blue);box-shadow:0 2px 12px rgba(26,58,107,.08)}
+.pipe-num{font-size:.62rem;font-weight:700;color:var(--faint);margin-bottom:.65rem}
+.pipe-icon{
+  width:36px;height:36px;border-radius:var(--radius);
+  display:flex;align-items:center;justify-content:center;
+  margin-bottom:.75rem;font-size:1.1rem;
+}
+.pi-blue{background:var(--blue-light)}
+.pi-orange{background:var(--orange-light)}
+.pi-green{background:var(--green-light)}
+.pipe-title{font-size:.88rem;font-weight:600;color:var(--ink);margin-bottom:.3rem}
+.pipe-desc{font-size:.78rem;color:var(--muted);line-height:1.5}
+.pipe-opt{
+  display:inline-block;font-size:.6rem;font-weight:600;text-transform:uppercase;
+  letter-spacing:.06em;color:var(--orange);background:var(--orange-light);
+  padding:2px 6px;border-radius:3px;margin-top:.5rem;
+}
+.pipe-connector{
+  display:flex;align-items:center;justify-content:center;
+  font-size:.85rem;color:var(--faint);padding-top:2.5rem;
+}
+
+/* ── FEATURES ── */
+.features-section{padding:3.5rem 2.5rem;background:var(--surface);border-bottom:1px solid var(--border)}
+.features{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem;margin-bottom:2rem}
+.feat-card{background:var(--raised);border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.25rem}
+.feat-icon{
+  width:32px;height:32px;background:var(--green-light);border-radius:var(--radius);
+  display:flex;align-items:center;justify-content:center;
+  font-size:.9rem;margin-bottom:.75rem;color:var(--green);
+}
+.feat-title{font-size:.88rem;font-weight:600;color:var(--ink);margin-bottom:.3rem}
+.feat-desc{font-size:.78rem;color:var(--muted);line-height:1.5}
+
+/* ── STATS ── */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem}
+.stat{
+  background:var(--raised);border:1px solid var(--border);
+  border-radius:var(--radius-lg);padding:1.25rem;text-align:center;
+}
+.stat-num{font-size:1.75rem;font-weight:700;color:var(--blue);line-height:1}
+.stat-label{font-size:.78rem;color:var(--muted);margin-top:.35rem}
+
+/* ── HOW IT WORKS ── */
+.how-section{padding:3.5rem 2.5rem;background:var(--raised);border-bottom:1px solid var(--border)}
+.how-grid{display:grid;grid-template-columns:1fr 1fr;gap:3rem;align-items:start}
+.how-steps{display:flex;flex-direction:column;gap:1.25rem}
+.how-step{display:flex;gap:1rem;align-items:flex-start}
+.how-dot{
+  width:28px;height:28px;border-radius:50%;background:var(--blue);
+  color:#fff;font-size:.7rem;font-weight:700;
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:.15rem;
+}
+.how-step-title{font-size:.9rem;font-weight:600;color:var(--ink);margin-bottom:.2rem}
+.how-step-desc{font-size:.8rem;color:var(--muted);line-height:1.55}
+.how-formats{display:flex;flex-direction:column;gap:.85rem}
+.format-card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius-lg);padding:1.1rem 1.25rem;
+}
+.format-head{display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem}
+.format-icon{
+  width:30px;height:30px;border-radius:var(--radius);
+  display:flex;align-items:center;justify-content:center;font-size:.85rem;
+}
+.fi-blue{background:var(--blue-light);color:var(--blue)}
+.fi-orange{background:var(--orange-light);color:var(--orange)}
+.format-title{font-size:.88rem;font-weight:600;color:var(--ink)}
+.format-tag{font-size:.62rem;font-weight:600;color:var(--faint);background:var(--border);padding:2px 6px;border-radius:3px;margin-left:auto}
+.format-desc{font-size:.78rem;color:var(--muted);line-height:1.5}
+.format-pros{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.6rem}
+.pro-tag{font-size:.65rem;color:var(--green);background:var(--green-light);padding:2px 7px;border-radius:3px;font-weight:500}
+
+/* ── CTA ── */
+.cta-section{
+  padding:4rem 2.5rem;text-align:center;
+  background:linear-gradient(135deg,var(--blue) 0%,var(--blue-mid) 100%);
+}
+.cta-title{font-size:1.75rem;font-weight:700;color:#fff;margin-bottom:.75rem}
+.cta-sub{font-size:.95rem;color:rgba(255,255,255,.75);margin-bottom:2rem}
+.btn-white{
+  background:#fff;color:var(--blue);border:none;
+  padding:.85rem 2rem;border-radius:var(--radius);
+  font-family:var(--font);font-size:.9rem;font-weight:700;
+  cursor:pointer;text-decoration:none;display:inline-flex;
+  align-items:center;gap:.4rem;transition:opacity .15s;
+}
+.btn-white:hover{opacity:.9}
+
+/* ── FOOTER ── */
+footer{
+  background:var(--ink);color:rgba(255,255,255,.6);
+  padding:1.75rem 2.5rem;display:flex;
+  align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;
+  margin-top:auto;
+}
+.footer-brand{display:flex;align-items:center;gap:.6rem}
+.footer-logo{
+  width:28px;height:28px;background:var(--blue-mid);border-radius:6px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:.65rem;font-weight:700;color:#fff;
+}
+.footer-name{font-size:.85rem;color:#fff;font-weight:600}
+.footer-right{font-size:.78rem}
+
+/* ── RESPONSIVE ── */
+@media(max-width:900px){
+  .hero{grid-template-columns:1fr;gap:2rem}
+  .hero-visual{display:none}
+  .pipeline{grid-template-columns:1fr 1fr}
+  .pipe-connector{display:none}
+  .how-grid{grid-template-columns:1fr}
+  .stats{grid-template-columns:repeat(2,1fr)}
+  nav{padding:.85rem 1.25rem}
+  .hero,.pipeline-section,.features-section,.how-section{padding-left:1.25rem;padding-right:1.25rem}
+}
+@media(max-width:560px){
+  .hero-title{font-size:1.9rem}
+  .pipeline{grid-template-columns:1fr}
+  .stats{grid-template-columns:repeat(2,1fr)}
+}
+
+/* SVG icon shorthand */
+.ico{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-brand">
+    <div class="nav-logo">NG</div>
+    <div>
+      <div class="nav-title">NGMC Pipeline</div>
+      <div class="nav-sub">InDesign / PDF → HTML</div>
+    </div>
+  </div>
+  <div class="nav-right">
+    <span class="nav-badge">PW R&D Team</span>
+    <a class="nav-cta" href="pipeline.html">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M2 7h10M7 2l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Launch Tool
+    </a>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div>
+    <div class="hero-badge">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M6 1l1.3 2.6 2.9.4-2.1 2 .5 2.9L6 7.5 3.4 8.9l.5-2.9L2 4l2.9-.4L6 1z" fill="currentColor"/></svg>
+      Powered by PW R&amp;D Team · NGMC
+    </div>
+    <h1 class="hero-title">
+      <span class="accent">NGMC</span> InDesign<br>
+      <span class="accent2">&amp; PDF</span> to HTML Tool
+    </h1>
+    <p class="hero-sub">Convert InDesign (.idml) and PDF source files into clean, styled, self-contained HTML for digital distribution — with image extraction, WYSIWYG editing, and one-click download. No server. No install.</p>
+    <div class="hero-btns">
+      <a class="btn-primary" href="pipeline.html">
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true"><circle cx="7.5" cy="7.5" r="6.5" stroke="currentColor" stroke-width="1.5"/><path d="M6 5l4 2.5L6 10V5z" fill="currentColor"/></svg>
+        Launch Pipeline
+      </a>
+      <a class="btn-outline" href="#how-it-works">
+        How it works
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true"><path d="M6.5 2v9M2 6.5l4.5 4.5L11 6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </a>
+    </div>
+  </div>
+
+  <!-- Mini pipeline visual -->
+  <div class="hero-visual">
+    <div class="hv-label">Pipeline stages</div>
+    <div class="hv-row active">
+      <div class="hv-num">1</div>
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 2h10v12H3V2z" stroke="currentColor" stroke-width="1.2"/><path d="M5 5h6M5 8h6M5 11h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      Source file
+    </div>
+    <div class="hv-row">
+      <div class="hv-num">2</div>
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 8h12M9 4l5 4-5 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Convert
+    </div>
+    <div class="hv-row">
+      <div class="hv-num">3</div>
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="4" width="12" height="8" rx="1" stroke="currentColor" stroke-width="1.2"/><circle cx="5.5" cy="7.5" r="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M2 11l3-3 2 2 3-3 4 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Extract images
+    </div>
+    <div class="hv-row">
+      <div class="hv-num">4</div>
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 12.5l1.5-1.5L12 3.5a1.5 1.5 0 012 2L6.5 13 3 13.5z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Edit
+    </div>
+    <div class="hv-row">
+      <div class="hv-num">5</div>
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2v9M4 8l4 4 4-4M2 13h12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Download
+    </div>
+  </div>
+</section>
+
+<!-- PIPELINE -->
+<section class="pipeline-section">
+  <div class="sec-label">End-to-end workflow</div>
+  <h2 class="sec-title">5-stage content pipeline</h2>
+  <p class="sec-sub">From raw source file to polished, editable, self-contained HTML in one browser tab.</p>
+  <div class="pipeline">
+    <div class="pipe-card">
+      <div class="pipe-num">01</div>
+      <div class="pipe-icon pi-blue">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M4 2h10v14H4V2z" stroke="#1a3a6b" stroke-width="1.4"/><path d="M6 6h6M6 9h6M6 12h4" stroke="#1a3a6b" stroke-width="1.4" stroke-linecap="round"/></svg>
+      </div>
+      <div class="pipe-title">Source</div>
+      <div class="pipe-desc">Select IDML (InDesign package) or PDF as your input. IDML gives full style fidelity.</div>
+    </div>
+    <div class="pipe-card">
+      <div class="pipe-num">02</div>
+      <div class="pipe-icon pi-blue">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M2 9h14M10 4l6 5-6 5" stroke="#1a3a6b" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="pipe-title">Convert</div>
+      <div class="pipe-desc">Paragraph styles, character styles, and images extracted and mapped to semantic HTML with inline CSS.</div>
+    </div>
+    <div class="pipe-card">
+      <div class="pipe-num">03</div>
+      <div class="pipe-icon pi-orange">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><rect x="2" y="4" width="14" height="10" rx="1.5" stroke="#e85d04" stroke-width="1.4"/><circle cx="6" cy="8.5" r="2" stroke="#e85d04" stroke-width="1.4"/><path d="M2 13l4-4 2.5 2.5 3-3.5 5 5" stroke="#e85d04" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="pipe-title">Extract images</div>
+      <div class="pipe-desc">Auto-detect vector figure regions from the PDF. Draw manual crops. Inject into HTML placeholders.</div>
+      <span class="pipe-opt">Optional</span>
+    </div>
+    <div class="pipe-card">
+      <div class="pipe-num">04</div>
+      <div class="pipe-icon pi-blue">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M3.5 14l2-2L14 3.5a1.4 1.4 0 012 2L7.5 14.5 3.5 14z" stroke="#1a3a6b" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="pipe-title">Edit</div>
+      <div class="pipe-desc">WYSIWYG editor with bold, colour, tables, equation panel, format painter, and PDF side-by-side view.</div>
+    </div>
+    <div class="pipe-card">
+      <div class="pipe-num">05</div>
+      <div class="pipe-icon pi-green">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M9 2v11M4.5 9l4.5 5 4.5-5M2 15h14" stroke="#15803d" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="pipe-title">Download</div>
+      <div class="pipe-desc">Download a single self-contained HTML file (all images embedded), or a ZIP with metadata.</div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section class="features-section">
+  <div class="sec-label">Capabilities</div>
+  <h2 class="sec-title">Everything built in</h2>
+  <p class="sec-sub">No extensions, no plugins, no build step. Open <code style="font-family:monospace;font-size:.88em;background:var(--border);padding:1px 5px;border-radius:3px">index.html</code> and start converting.</p>
+
+  <div class="features">
+    <div class="feat-card">
+      <div class="feat-icon">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 8h12M7.5 3L13 8l-5.5 5" stroke="#15803d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="feat-title">IDML converter</div>
+      <div class="feat-desc">Full paragraph and character style mapping. Spread ordering by Y-position. Base64 image embedding. 41+ styles supported.</div>
+    </div>
+    <div class="feat-card">
+      <div class="feat-icon">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 8h12M7.5 3L13 8l-5.5 5" stroke="#15803d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="feat-title">PDF converter</div>
+      <div class="feat-desc">Font-size threshold heading detection. Line merging into paragraphs. Raster image extraction. Page range selection.</div>
+    </div>
+    <div class="feat-card">
+      <div class="feat-icon">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 8h12M7.5 3L13 8l-5.5 5" stroke="#15803d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="feat-title">Figure extractor</div>
+      <div class="feat-desc">Auto-detect vector diagram regions by text gap analysis. Manual crop drawing. Inject into vector-figure placeholders.</div>
+    </div>
+    <div class="feat-card">
+      <div class="feat-icon">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 8h12M7.5 3L13 8l-5.5 5" stroke="#15803d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="feat-title">WYSIWYG editor</div>
+      <div class="feat-desc">Bold, italic, underline, colour, highlight, font size, line spacing, alignment, lists, format painter.</div>
+    </div>
+    <div class="feat-card">
+      <div class="feat-icon">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 8h12M7.5 3L13 8l-5.5 5" stroke="#15803d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="feat-title">Equation panel</div>
+      <div class="feat-desc">Fractions, superscript, subscript, square roots, vectors, integrals, summations. Greek alphabet and 20+ operators.</div>
+    </div>
+    <div class="feat-card">
+      <div class="feat-icon">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 8h12M7.5 3L13 8l-5.5 5" stroke="#15803d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="feat-title">Table editor</div>
+      <div class="feat-desc">Insert tables from a grid picker. Floating toolbar to add/delete rows and columns in place.</div>
+    </div>
+    <div class="feat-card">
+      <div class="feat-icon">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 8h12M7.5 3L13 8l-5.5 5" stroke="#15803d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="feat-title">PDF side-by-side</div>
+      <div class="feat-desc">Load the original PDF alongside the HTML editor. Page navigation, zoom, fit-width. Drag the splitter to resize.</div>
+    </div>
+    <div class="feat-card">
+      <div class="feat-icon">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 8h12M7.5 3L13 8l-5.5 5" stroke="#15803d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="feat-title">100% client-side</div>
+      <div class="feat-desc">No server, no upload, no data leaves your device. Works on GitHub Pages. PDF.js + JSZip only dependencies.</div>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-num">41+</div>
+      <div class="stat-label">InDesign styles mapped</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">5</div>
+      <div class="stat-label">Pipeline stages</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">0</div>
+      <div class="stat-label">Server dependencies</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">1</div>
+      <div class="stat-label">File to deploy</div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section class="how-section" id="how-it-works">
+  <div class="sec-label">Guide</div>
+  <h2 class="sec-title">How to use it</h2>
+  <p class="sec-sub">The complete workflow takes under 5 minutes for a typical chapter.</p>
+
+  <div class="how-grid">
+    <div class="how-steps">
+      <div class="how-step">
+        <div class="how-dot">1</div>
+        <div>
+          <div class="how-step-title">Open <code style="font-family:monospace;font-size:.85em">index.html</code> in Chrome or Edge</div>
+          <div class="how-step-desc">Double-click the file or serve from GitHub Pages. No install required.</div>
+        </div>
+      </div>
+      <div class="how-step">
+        <div class="how-dot">2</div>
+        <div>
+          <div class="how-step-title">Select your source type</div>
+          <div class="how-step-desc">Choose IDML for full style fidelity, or PDF if you only have the exported file.</div>
+        </div>
+      </div>
+      <div class="how-step">
+        <div class="how-dot">3</div>
+        <div>
+          <div class="how-step-title">Upload files and convert</div>
+          <div class="how-step-desc">For IDML: upload the .idml and all linked image files from the InDesign Links folder. For PDF: set heading thresholds and click Convert.</div>
+        </div>
+      </div>
+      <div class="how-step">
+        <div class="how-dot">4</div>
+        <div>
+          <div class="how-step-title">Extract vector figures (optional)</div>
+          <div class="how-step-desc">Drop the original PDF to auto-detect diagram regions. Draw manual crops for anything missed. Inject into the HTML.</div>
+        </div>
+      </div>
+      <div class="how-step">
+        <div class="how-dot">5</div>
+        <div>
+          <div class="how-step-title">Edit and download</div>
+          <div class="how-step-desc">Fix any conversion errors in the WYSIWYG editor. Download a single self-contained HTML file — ready to distribute.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="how-formats">
+      <div class="format-card">
+        <div class="format-head">
+          <div class="format-icon fi-blue">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 2h7l4 4v8H3V2z" stroke="#1a3a6b" stroke-width="1.3"/><path d="M10 2v4h4" stroke="#1a3a6b" stroke-width="1.3"/></svg>
+          </div>
+          <div class="format-title">IDML path</div>
+          <div class="format-tag">Recommended</div>
+        </div>
+        <div class="format-desc">Uses InDesign's XML structure directly — paragraph styles, character styles, story threading, image links. Most accurate output.</div>
+        <div class="format-pros">
+          <span class="pro-tag">Full style names</span>
+          <span class="pro-tag">Exact reading order</span>
+          <span class="pro-tag">All image links</span>
+        </div>
+      </div>
+
+      <div class="format-card">
+        <div class="format-head">
+          <div class="format-icon fi-orange">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 2h7l4 4v8H3V2z" stroke="#e85d04" stroke-width="1.3"/><path d="M10 2v4h4" stroke="#e85d04" stroke-width="1.3"/><path d="M6 9h4M6 11h2" stroke="#e85d04" stroke-width="1.3" stroke-linecap="round"/></svg>
+          </div>
+          <div class="format-title">PDF path</div>
+          <div class="format-tag">Fallback</div>
+        </div>
+        <div class="format-desc">Extracts text via PDF.js glyph positions. Heading detection based on font size thresholds. Use when no IDML source is available.</div>
+        <div class="format-pros">
+          <span class="pro-tag">No source file needed</span>
+          <span class="pro-tag">Raster images extracted</span>
+          <span class="pro-tag">Configurable thresholds</span>
+        </div>
+      </div>
+
+      <div class="format-card" style="border-color:var(--orange);background:var(--orange-light)">
+        <div class="format-head">
+          <div class="format-icon" style="background:rgba(232,93,4,.15);color:var(--orange)">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6" stroke="#e85d04" stroke-width="1.3"/><path d="M8 5v3.5M8 10.5v.5" stroke="#e85d04" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </div>
+          <div class="format-title" style="color:var(--orange)">Output format note</div>
+        </div>
+        <div class="format-desc" style="color:#7c3308">The downloaded HTML embeds all images as base64 data URIs. The file is 100% self-contained — no external assets needed. It opens in any browser and can be uploaded to any web server.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta-section">
+  <h2 class="cta-title">Ready to convert your first chapter?</h2>
+  <p class="cta-sub">Open the tool, drop your IDML or PDF file, and download clean HTML in minutes.</p>
+  <a class="btn-white" href="pipeline.html">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6.5" stroke="#1a3a6b" stroke-width="1.5"/><path d="M6.5 5.5l4 2.5-4 2.5V5.5z" fill="#1a3a6b"/></svg>
+    Launch the pipeline →
+  </a>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-brand">
+    <div class="footer-logo">NG</div>
+    <div>
+      <div class="footer-name">NGMC InDesign / PDF to HTML Tool</div>
+      <div>Next Gen Media &amp; Content Development</div>
+    </div>
+  </div>
+  <div class="footer-right">
+    Powered by PW R&amp;D Team &nbsp;·&nbsp; Client-side only &nbsp;·&nbsp; PDF.js &amp; JSZip
+  </div>
+</footer>
+
+</body>
+</html>
