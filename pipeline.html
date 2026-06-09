@@ -3355,23 +3355,68 @@ function buildMeta(parsed,blocks) {
   const freq={};
   blocks.forEach(b=>{freq[b.styleName]=(freq[b.styleName]||0)+1;});
   const uniqueLinked = parsed.linkedImageFiles || [...new Set(Object.values(parsed.linkIdToFile||parsed.linkMap||{}))];
-  // Collect image frame dimensions (pt and px) for pillow_embed.py
+  // Collect image frame dimensions + page-relative coordinates for pillow_embed.py
+  // page_num is 1-based PDF page number; x_pt/y_pt are top-left of frame on that page (points)
   const imgFrameMeta = [];
   const seenF = new Set();
+  let pdfPageNum = 0;
   parsed.spreads.forEach(sp => {
+    const pgGeo = (parsed.spreadPageGeometry||{})[sp.id] || [];
+    // Sort pages left-to-right by ItemTransform tx
+    const sortedPgs = [...pgGeo].sort((a,b) => a.tx - b.tx);
+    // Build per-page origin (same logic as buildPageLayoutHTML)
+    const frameDataM = [];
+    (sp.frames||[]).forEach(f => {
+      if (!f.bounds) return;
+      const gb = String(f.bounds).trim().split(/\s+/).map(Number);
+      const it = f.transform ? String(f.transform).trim().split(/\s+/).map(Number) : [1,0,0,1,0,0];
+      if (gb.length >= 4)
+        frameDataM.push({ f, top:gb[0]+(it[5]||0), left:gb[1]+(it[4]||0), bottom:gb[2]+(it[5]||0), right:gb[3]+(it[4]||0) });
+    });
+    sortedPgs.forEach(pg => {
+      pdfPageNum++;
+      const pgW = pg.right - pg.left, pgH = pg.bottom - pg.top;
+      if (pgW < 10 || pgH < 10) return;
+      const origins = [
+        { ol: pg.left, ot: pg.top },
+        { ol: pg.left+pg.tx, ot: pg.top+pg.ty },
+      ];
+      let best = origins[0], bestC = -1;
+      origins.forEach(o => {
+        let c = 0;
+        frameDataM.forEach(({left,top,right,bottom}) => {
+          const cx=left+(right-left)/2-o.ol, cy=top+(bottom-top)/2-o.ot;
+          if(cx>=0&&cx<=pgW&&cy>=0&&cy<=pgH) c++;
+        });
+        if(c >= bestC){ bestC=c; best=o; }
+      });
+      const { ol:pL, ot:pT } = best;
+      frameDataM.forEach(({f, top, left, bottom, right}) => {
+        if (f.type !== 'image' || !f.filename) return;
+        if (seenF.has(f.filename)) return;
+        const rl=left-pL, rt=top-pT, fw=right-left, fh=bottom-top;
+        const cx=rl+fw/2, cy=rt+fh/2;
+        if (cx<0||cx>pgW||cy<0||cy>pgH) return;
+        seenF.add(f.filename);
+        const pxPerPt = 96/72;
+        imgFrameMeta.push({
+          filename: f.filename,
+          page_num: pdfPageNum,
+          x_pt: +rl.toFixed(2), y_pt: +rt.toFixed(2),
+          widthPt: +fw.toFixed(2), heightPt: +fh.toFixed(2),
+          widthPx: Math.round(fw*pxPerPt), heightPx: Math.round(fh*pxPerPt),
+          pageSizePt: { width: +pgW.toFixed(2), height: +pgH.toFixed(2) },
+        });
+      });
+    });
+    // Fallback: frames not placed on any page still get size info
     (sp.frames||[]).forEach(f => {
       if (f.type==='image' && f.filename && f.bounds && !seenF.has(f.filename)) {
         seenF.add(f.filename);
         const gb = String(f.bounds).trim().split(/\s+/).map(Number);
         if (gb.length >= 4) {
           const pxPerPt = 96/72;
-          imgFrameMeta.push({
-            filename: f.filename,
-            widthPt: +(gb[3]-gb[1]).toFixed(2),
-            heightPt: +(gb[2]-gb[0]).toFixed(2),
-            widthPx: Math.round((gb[3]-gb[1])*pxPerPt),
-            heightPx: Math.round((gb[2]-gb[0])*pxPerPt),
-          });
+          imgFrameMeta.push({ filename:f.filename, widthPt:+(gb[3]-gb[1]).toFixed(2), heightPt:+(gb[2]-gb[0]).toFixed(2), widthPx:Math.round((gb[3]-gb[1])*pxPerPt), heightPx:Math.round((gb[2]-gb[0])*pxPerPt) });
         }
       }
     });
@@ -3623,18 +3668,32 @@ function buildPageLayoutHTML(parsed) {
 // ── Pillow companion script (bundled in ZIP) ─────────────────────────────────
 const PILLOW_SCRIPT = `#!/usr/bin/env python3
 """
-pillow_embed.py  —  Embed images into converted HTML using Pillow.
+pillow_embed.py  —  Embed images into the converted HTML using Pillow.
 
-Reads the exported HTML, finds placeholder divs (or bare img src paths),
-processes each image with Pillow (format conversion, dimension-preserving
-resize from metadata.json frame bounds), and embeds them as base64.
+TWO MODES
+─────────
+A) Images folder  (default)
+   Looks for image files in ./images/ (or --images-dir) and embeds them.
+
+   python scripts/pillow_embed.py index.html
+   python scripts/pillow_embed.py index.html --images-dir /path/to/links
+
+B) PDF extraction  (--pdf)
+   Renders each PDF page at high DPI with pdf2image/poppler and crops
+   every image frame from its exact InDesign coordinates stored in
+   metadata.json.  No separate images folder needed.
+
+   python scripts/pillow_embed.py index.html --pdf original.pdf
+   python scripts/pillow_embed.py index.html --pdf original.pdf --dpi 200
 
 Requirements:
     pip install pillow beautifulsoup4
-
-Usage:
-    python scripts/pillow_embed.py index.html
-    python scripts/pillow_embed.py index.html output.html --images-dir ./images
+    pip install pdf2image          # only needed for --pdf mode
+    # also install poppler:
+    #   Windows : https://github.com/oschwartz10612/poppler-windows/releases
+    #             then add bin/ to PATH
+    #   macOS   : brew install poppler
+    #   Linux   : sudo apt install poppler-utils
 """
 import sys, os, base64, json, re
 from io import BytesIO
@@ -3650,6 +3709,8 @@ try:
 except ImportError:
     print("ERROR: beautifulsoup4 not found.  Run: pip install beautifulsoup4"); sys.exit(1)
 
+
+# ── helpers ──────────────────────────────────────────────────────────────────
 
 def find_image(images_dir, fname):
     images_dir = Path(images_dir)
@@ -3670,9 +3731,10 @@ def find_image(images_dir, fname):
 
 
 def img_to_b64(img):
-    fmt = 'PNG' if img.mode == 'RGBA' else 'JPEG'
+    fmt = 'PNG' if img.mode in ('RGBA', 'LA', 'PA') else 'JPEG'
     buf = BytesIO()
     if fmt == 'JPEG':
+        img = img.convert('RGB')
         img.save(buf, 'JPEG', quality=92, optimize=True, subsampling=0)
     else:
         img.save(buf, 'PNG', optimize=True)
@@ -3680,61 +3742,150 @@ def img_to_b64(img):
     return mime, base64.b64encode(buf.getvalue()).decode()
 
 
-def process_image(img_path, target_w=None, target_h=None):
-    """Open with Pillow, convert mode, optionally resize to frame bounds."""
-    img = Image.open(img_path)
-    # Convert problematic modes
+def normalise(img):
+    """Convert exotic Pillow modes to something jpg/png-safe."""
     if img.mode == 'CMYK':
         img = img.convert('RGB')
     elif img.mode == 'P':
         img = img.convert('RGBA' if 'transparency' in img.info else 'RGB')
-    elif img.mode == 'LA':
-        img = img.convert('RGBA')
-    elif img.mode == '1':
-        img = img.convert('L')
-
-    # Resize to frame dimensions (preserving aspect ratio inside the frame)
-    if target_w and target_h:
-        img.thumbnail((target_w, target_h), Image.LANCZOS)
-
+    elif img.mode in ('LA', '1'):
+        img = img.convert('RGBA' if img.mode == 'LA' else 'L')
     return img
 
 
-def main(html_path, output_path=None, images_dir=None):
-    html_path = Path(html_path).resolve()
-    if output_path is None:
-        output_path = html_path.with_stem(html_path.stem + '_embedded')
-    if images_dir is None:
-        images_dir = html_path.parent / 'images'
+def process_image(img_path, target_w=None, target_h=None):
+    img = normalise(Image.open(img_path))
+    if target_w and target_h:
+        img.thumbnail((target_w, target_h), Image.LANCZOS)
+    return img
 
-    with open(html_path, encoding='utf-8') as f:
-        html = f.read()
 
-    soup = BeautifulSoup(html, 'html.parser')
+def placeholder_fname(div):
+    """Extract the filename text from an img-placeholder div."""
+    raw = div.get_text(separator=' ', strip=True)
+    # strip the camera emoji and surrounding whitespace
+    raw = re.sub(r'[\\U00010000-\\U0010ffff]|[\\u2600-\\u27BF]', '', raw)
+    raw = re.sub(r'[^\\x20-\\x7E]', '', raw)
+    return raw.strip().lstrip('\\xf0\\x9f\\x93\\xb7').strip()   # extra safety strip of utf-8 emoji bytes
 
-    # Load InDesign frame dimensions from metadata.json
-    frame_dims = {}
-    meta_path = html_path.parent / 'metadata.json'
-    if meta_path.exists():
+
+# ── PDF extraction mode ───────────────────────────────────────────────────────
+
+def load_pdf_pages(pdf_path, dpi=150):
+    """Render all PDF pages to PIL Images at the given DPI."""
+    try:
+        from pdf2image import convert_from_path
+    except ImportError:
+        print("ERROR: pdf2image not found.  Run: pip install pdf2image")
+        print("       Also install poppler (see script header).")
+        sys.exit(1)
+    print(f"  Rendering PDF at {dpi} DPI …", end=' ', flush=True)
+    pages = convert_from_path(str(pdf_path), dpi=dpi)
+    print(f"{len(pages)} page(s)")
+    return pages
+
+
+def crop_frame_from_page(page_img, frame, dpi):
+    """
+    Crop an InDesign image frame region from a rendered PDF page.
+
+    frame keys (from metadata.json):
+        page_num   : 1-based PDF page index
+        x_pt       : left edge of frame on the page (points, top-left origin)
+        y_pt       : top  edge of frame on the page (points, top-left origin)
+        widthPt    : frame width  (points)
+        heightPt   : frame height (points)
+        pageSizePt : { width, height } of the page in points
+    """
+    pt_to_px = dpi / 72.0
+    pg_w_px, pg_h_px = page_img.size
+
+    x_px = int(frame['x_pt']      * pt_to_px)
+    y_px = int(frame['y_pt']      * pt_to_px)
+    w_px = int(frame['widthPt']   * pt_to_px)
+    h_px = int(frame['heightPt']  * pt_to_px)
+
+    # Clamp to actual rendered page size
+    x_px = max(0, min(x_px, pg_w_px - 1))
+    y_px = max(0, min(y_px, pg_h_px - 1))
+    w_px = max(4, min(w_px, pg_w_px - x_px))
+    h_px = max(4, min(h_px, pg_h_px - y_px))
+
+    return page_img.crop((x_px, y_px, x_px + w_px, y_px + h_px))
+
+
+def embed_from_pdf(soup, frames_meta, pdf_path, dpi=150):
+    """Extract every image placeholder from the PDF and embed as base64."""
+    # Build lookup: filename → frame metadata
+    by_fname = {f['filename']: f for f in frames_meta if 'page_num' in f}
+    if not by_fname:
+        print("  No page-coordinate data in metadata.json — re-export the IDML to get PDF extraction support.")
+        return 0, 0
+
+    # Find which pages we actually need
+    needed_pages = sorted({f['page_num'] for f in by_fname.values()})
+    max_page = max(needed_pages)
+
+    pages = load_pdf_pages(pdf_path, dpi)
+    if len(pages) < max_page:
+        print(f"  Warning: PDF has {len(pages)} pages but metadata references page {max_page}.")
+
+    embedded = failed = 0
+    placeholders = soup.find_all('div', class_='img-placeholder')
+
+    for div in placeholders:
+        fname = placeholder_fname(div)
+        if not fname:
+            continue
+        frame = by_fname.get(fname)
+        if not frame:
+            # fuzzy match by stem
+            stem = Path(fname).stem.lower()
+            frame = next((f for k, f in by_fname.items() if Path(k).stem.lower() == stem), None)
+        if not frame:
+            print(f"  ✗ No coordinate data for: {fname}")
+            failed += 1
+            continue
+
+        pg_idx = frame['page_num'] - 1
+        if pg_idx >= len(pages):
+            print(f"  ✗ Page {frame['page_num']} out of range for: {fname}")
+            failed += 1
+            continue
+
         try:
-            meta = json.loads(meta_path.read_text(encoding='utf-8'))
-            for fr in meta.get('imageFrames', []):
-                if fr.get('filename'):
-                    frame_dims[fr['filename']] = (fr.get('widthPx'), fr.get('heightPx'))
+            cropped = crop_frame_from_page(pages[pg_idx], frame, dpi)
+            cropped = normalise(cropped)
+            mime, b64 = img_to_b64(cropped)
+            w, h = cropped.size
+            new_tag = soup.new_tag('img',
+                src=f'data:{mime};base64,{b64}',
+                alt=fname, width=w, height=h,
+                style='max-width:100%;height:auto;display:block;margin:0 auto')
+            div.replace_with(new_tag)
+            print(f"  ✓ {fname}  (page {frame['page_num']}, {w}×{h}  {mime.split('/')[1].upper()})")
+            embedded += 1
         except Exception as e:
-            print(f"  Warning: could not read metadata.json: {e}")
+            print(f"  ✗ Error cropping {fname}: {e}")
+            failed += 1
 
+    return embedded, failed
+
+
+# ── images-folder mode ────────────────────────────────────────────────────────
+
+def embed_from_folder(soup, frames_meta, images_dir):
+    frame_dims = {f['filename']: (f.get('widthPx'), f.get('heightPx')) for f in frames_meta}
     embedded = skipped = failed = 0
 
-    # 1. Replace <div class="img-placeholder"> with embedded <img>
+    # 1. img-placeholder divs
     for div in soup.find_all('div', class_='img-placeholder'):
-        raw = div.get_text(strip=True).replace('\\U0001f4f7','').replace('\\U0001F4F7','').strip()
-        # Strip emoji characters
-        fname = re.sub(r'[^\\x20-\\x7E]', '', raw).strip()
+        fname = placeholder_fname(div)
         img_path = find_image(images_dir, fname)
         if not img_path:
             print(f"  ✗ Not found: {fname}")
-            failed += 1; continue
+            failed += 1
+            continue
         try:
             tw, th = frame_dims.get(fname, (None, None))
             img = process_image(img_path, tw, th)
@@ -3745,12 +3896,12 @@ def main(html_path, output_path=None, images_dir=None):
                 alt=fname, width=w, height=h,
                 style='max-width:100%;height:auto;display:block;margin:0 auto')
             div.replace_with(new_tag)
-            print(f"  ✓ {fname}  ({w}\\u00d7{h}  {mime.split('/')[1].upper()})")
+            print(f"  ✓ {fname}  ({w}×{h}  {mime.split('/')[1].upper()})")
             embedded += 1
         except Exception as e:
             print(f"  ✗ Error on {fname}: {e}"); failed += 1
 
-    # 2. Replace non-base64 img src paths with embedded data URLs
+    # 2. bare img src (non-base64)
     for tag in soup.find_all('img'):
         src = tag.get('src', '')
         if src.startswith('data:'):
@@ -3758,7 +3909,8 @@ def main(html_path, output_path=None, images_dir=None):
         fname = os.path.basename(src)
         img_path = find_image(images_dir, fname)
         if not img_path:
-            skipped += 1; continue
+            skipped += 1
+            continue
         try:
             tw, th = frame_dims.get(fname, (None, None))
             img = process_image(img_path, tw, th)
@@ -3767,28 +3919,71 @@ def main(html_path, output_path=None, images_dir=None):
             tag['src'] = f'data:{mime};base64,{b64}'
             tag['width'] = w; tag['height'] = h
             tag['style'] = 'max-width:100%;height:auto;display:block;margin:0 auto'
-            print(f"  ✓ {fname}  ({w}\\u00d7{h})")
+            print(f"  ✓ {fname}  ({w}×{h})")
             embedded += 1
         except Exception as e:
             print(f"  ✗ Error on {fname}: {e}"); failed += 1
 
+    return embedded, skipped, failed
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main(html_path, output_path=None, images_dir=None, pdf_path=None, dpi=150):
+    html_path = Path(html_path).resolve()
+    if output_path is None:
+        output_path = html_path.with_stem(html_path.stem + '_embedded')
+    if images_dir is None:
+        images_dir = html_path.parent / 'images'
+
+    with open(html_path, encoding='utf-8') as f:
+        html = f.read()
+    soup = BeautifulSoup(html, 'html.parser')
+
+    # Load metadata.json for frame coordinates / dimensions
+    frames_meta = []
+    meta_path = html_path.parent / 'metadata.json'
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding='utf-8'))
+            frames_meta = meta.get('imageFrames', [])
+        except Exception as e:
+            print(f"  Warning: could not read metadata.json: {e}")
+
+    if pdf_path:
+        print(f"\\n── PDF extraction mode  ({pdf_path}) ──")
+        embedded, failed = embed_from_pdf(soup, frames_meta, pdf_path, dpi)
+        skipped = 0
+    else:
+        print(f"\\n── Images-folder mode  ({images_dir}) ──")
+        embedded, skipped, failed = embed_from_folder(soup, frames_meta, images_dir)
+
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(str(soup))
 
-    print(f"\\nDone: {embedded} embedded  {failed} failed  {skipped} skipped  →  {output_path}")
+    print(f"\\nDone: {embedded} embedded  {failed} failed  {skipped} skipped")
+    print(f"Output → {output_path}")
 
 
 if __name__ == '__main__':
     args = sys.argv[1:]
     if not args:
         print(__doc__); sys.exit(0)
+
     html_p = args[0]
-    out_p  = args[1] if len(args) > 1 and not args[1].startswith('--') else None
-    img_d  = None
-    for i, a in enumerate(args):
-        if a == '--images-dir' and i+1 < len(args):
-            img_d = args[i+1]
-    main(html_p, out_p, img_d)
+    out_p  = args[1] if len(args) > 1 and not args[1].startswith('-') else None
+
+    pdf_p = img_d = None
+    dpi_val = 150
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == '--pdf'        and i+1 < len(args): pdf_p   = args[i+1]; i += 2; continue
+        if a == '--images-dir' and i+1 < len(args): img_d   = args[i+1]; i += 2; continue
+        if a == '--dpi'        and i+1 < len(args): dpi_val = int(args[i+1]); i += 2; continue
+        i += 1
+
+    main(html_p, out_p, images_dir=img_d, pdf_path=pdf_p, dpi=dpi_val)
 `;
 
 async function buildIDMLZip(parsed,title) {
@@ -3835,12 +4030,29 @@ async function buildIDMLZip(parsed,title) {
   zip.folder('scripts').file('pillow_embed.py', PILLOW_SCRIPT);
   zip.folder('scripts').file('README.txt',
     'pillow_embed.py — embed missing images into index.html using Pillow.\n\n' +
-    'Requirements:\n  pip install pillow beautifulsoup4\n\n' +
-    'Usage:\n  python scripts/pillow_embed.py index.html\n\n' +
-    'Place your image files in the images/ folder first.\n' +
-    'The script reads metadata.json for InDesign frame dimensions\n' +
-    'and resizes each image to fit its original frame without\n' +
-    'disturbing the page layout.\n'
+    '══ MODE A: extract from PDF (recommended — no image files needed) ══\n\n' +
+    'Requirements:\n' +
+    '  pip install pillow beautifulsoup4 pdf2image\n' +
+    '  # also install poppler:\n' +
+    '  #   Windows : https://github.com/oschwartz10612/poppler-windows/releases\n' +
+    '  #             unzip and add the bin/ folder to your PATH\n' +
+    '  #   macOS   : brew install poppler\n' +
+    '  #   Linux   : sudo apt install poppler-utils\n\n' +
+    'Usage:\n' +
+    '  python scripts/pillow_embed.py index.html --pdf original.pdf\n' +
+    '  python scripts/pillow_embed.py index.html --pdf original.pdf --dpi 200\n\n' +
+    'The script reads metadata.json for the exact InDesign page coordinates\n' +
+    'of every image frame, renders each PDF page at the requested DPI,\n' +
+    'crops the frame region, and embeds it as base64 directly in index.html.\n\n' +
+    '══ MODE B: embed from images folder ══\n\n' +
+    'Requirements:\n' +
+    '  pip install pillow beautifulsoup4\n\n' +
+    'Usage:\n' +
+    '  python scripts/pillow_embed.py index.html\n' +
+    '  python scripts/pillow_embed.py index.html --images-dir /path/to/links\n\n' +
+    'Place the original linked image files in the images/ folder (or pass\n' +
+    '--images-dir). The script matches by filename, resizes to InDesign frame\n' +
+    'dimensions from metadata.json, and embeds as base64.\n'
   );
 
   if(unmatched.length > 0){
