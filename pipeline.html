@@ -384,6 +384,18 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;cursor:po
         <div class="img-missing" id="idml-img-missing"></div>
       </div>
       <div class="err-panel" id="s2-idml-err"></div>
+      <div class="sec-label" style="margin-top:1rem">Step 3 — Add original PDF <span style="color:var(--muted);font-size:.72rem">(optional — enables auto image extraction)</span></div>
+      <div class="dropzone" id="idml-pdf-dz" style="min-height:70px;padding:.75rem 1rem">
+        <input type="file" id="idml-pdf-input" accept=".pdf" style="display:none"/>
+        <div class="dz-icon" style="font-size:1.5rem">📄</div>
+        <div class="dz-main" style="font-size:.85rem">Drop the original <strong>.pdf</strong> here to auto-extract images</div>
+        <div class="dz-sub">or click to browse</div>
+      </div>
+      <div class="file-card" id="idml-pdf-card" style="display:none">
+        <div class="fc-icon">📄</div>
+        <div><div class="fc-name" id="idml-pdf-fname"></div><div class="fc-meta" id="idml-pdf-fmeta"></div></div>
+        <button class="fc-remove" onclick="clearIDMLPdf()">✕</button>
+      </div>
       <div style="display:flex;gap:1.5rem;align-items:center;margin-top:.75rem;margin-bottom:.5rem;font-size:.8rem">
         <label style="display:flex;align-items:center;gap:.4rem">
           <input type="checkbox" id="chk-page-layout"/>
@@ -816,6 +828,8 @@ function fmtBytes(b){if(b<1024)return b+' B';if(b<1048576)return(b/1024).toFixed
 const state={
   sourceType:null,        // 'idml'|'pdf'
   idmlFile:null,
+  idmlPdfFile:null,
+  idmlPdfBuf:null,
   pdfConvFile:null,
   pdfConvDoc:null,
   convertedHTML:null,     // raw HTML string from converter
@@ -948,6 +962,74 @@ function clearIDML(){
   $('s2-convert-btn').disabled=true;
 }
 
+// IDML companion PDF upload (for auto image extraction)
+const idmlPdfDz=$('idml-pdf-dz');
+idmlPdfDz.addEventListener('click',()=>$('idml-pdf-input').click());
+idmlPdfDz.addEventListener('dragover',e=>{e.preventDefault();idmlPdfDz.classList.add('drag-over');});
+idmlPdfDz.addEventListener('dragleave',()=>idmlPdfDz.classList.remove('drag-over'));
+idmlPdfDz.addEventListener('drop',e=>{e.preventDefault();idmlPdfDz.classList.remove('drag-over');setIDMLPdf(e.dataTransfer.files[0]);});
+$('idml-pdf-input').addEventListener('change',e=>{setIDMLPdf(e.target.files[0]);e.target.value='';});
+async function setIDMLPdf(f){
+  if(!f||!f.name.toLowerCase().endsWith('.pdf')) return;
+  state.idmlPdfFile=f;
+  state.idmlPdfBuf=await f.arrayBuffer();
+  $('idml-pdf-fname').textContent=f.name;
+  $('idml-pdf-fmeta').textContent=fmtBytes(f.size);
+  $('idml-pdf-card').style.display='flex';
+  idmlPdfDz.style.display='none';
+}
+function clearIDMLPdf(){
+  state.idmlPdfFile=null;
+  state.idmlPdfBuf=null;
+  $('idml-pdf-card').style.display='none';
+  idmlPdfDz.style.display='';
+}
+
+// Auto-extract images from PDF using PDF.js + InDesign frame coordinates from metadata
+async function extractImagesFromPDF(pdfBuf, meta){
+  const frames = meta.imageFrames || meta.images || [];
+  if(!pdfBuf || !frames.length) return;
+  try{
+    const pdfDoc=await pdfjsLib.getDocument({data:new Uint8Array(pdfBuf)}).promise;
+    const pageCache={};
+    const SCALE=2; // render at 2× (144 dpi equivalent)
+    for(const img of frames){
+      const fname = img.filename || img.fname;
+      if(!fname) continue;
+      if(imageFiles[fname]) continue; // already have it
+      if(!img.page_num || img.x_pt==null || !img.widthPt) continue; // no coordinates
+      const pgNum=img.page_num;
+      if(!pageCache[pgNum]){
+        try{
+          const page=await pdfDoc.getPage(pgNum);
+          const vp=page.getViewport({scale:SCALE});
+          const canvas=document.createElement('canvas');
+          canvas.width=vp.width; canvas.height=vp.height;
+          await page.render({canvasContext:canvas.getContext('2d'),viewport:vp}).promise;
+          pageCache[pgNum]=canvas;
+        }catch(e){continue;}
+      }
+      const pageCanvas=pageCache[pgNum];
+      const x=Math.round(img.x_pt*SCALE);
+      const y=Math.round(img.y_pt*SCALE);
+      const w=Math.round(img.widthPt*SCALE);
+      const h=Math.round(img.heightPt*SCALE);
+      if(w<4||h<4) continue;
+      // Clamp to page canvas bounds
+      const cx=Math.max(0,Math.min(x,pageCanvas.width-1));
+      const cy=Math.max(0,Math.min(y,pageCanvas.height-1));
+      const cw=Math.min(w,pageCanvas.width-cx);
+      const ch=Math.min(h,pageCanvas.height-cy);
+      if(cw<4||ch<4) continue;
+      const crop=document.createElement('canvas');
+      crop.width=cw; crop.height=ch;
+      crop.getContext('2d').drawImage(pageCanvas,cx,cy,cw,ch,0,0,cw,ch);
+      imageFiles[fname]=crop.toDataURL('image/jpeg',0.92);
+    }
+    renderImgList();
+  }catch(e){console.warn('PDF image extraction failed:',e);}
+}
+
 // IDML image upload
 const imgDz=$('idml-img-dz');
 imgDz.addEventListener('click',()=>$('idml-img-input').click());
@@ -1064,7 +1146,21 @@ async function runIDMLConvert(){
     s2Progress('Resolving styles…',50,`${parsed.stories.length} stories`);await tick();
     s2Progress('Converting to HTML…',70,'Mapping styles');await tick();
     const title=state.idmlFile.name.replace(/\.idml$/i,'');
-    const {zip,meta,matched,unmatched,htmlString}=await buildIDMLZip(parsed,title);
+    let {zip,meta,matched,unmatched,htmlString}=await buildIDMLZip(parsed,title);
+
+    // Auto-extract images from PDF if user supplied one
+    if(state.idmlPdfBuf && meta && meta.imageFrames && meta.imageFrames.length){
+      s2Progress('Extracting images from PDF…',80,'Rendering pages');await tick();
+      const beforeCount=Object.keys(imageFiles).length;
+      await extractImagesFromPDF(state.idmlPdfBuf, meta);
+      const afterCount=Object.keys(imageFiles).length;
+      if(afterCount>beforeCount){
+        // Rebuild HTML now that imageFiles has new entries
+        s2Progress('Re-embedding images…',88,'Rebuilding HTML');await tick();
+        ({zip,meta,matched,unmatched,htmlString}=await buildIDMLZip(parsed,title));
+      }
+    }
+
     s2Progress('Packaging…',90,'Building ZIP');await tick();
     state.convertedZipBlob=await zip.generateAsync({type:'blob',compression:'DEFLATE',compressionOptions:{level:6}});
     state.convertedHTML=htmlString;
