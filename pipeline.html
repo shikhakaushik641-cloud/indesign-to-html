@@ -2343,6 +2343,7 @@ sup,sub{font-size:.72em;line-height:0}
 /* ── Inline SVG diagrams / flowcharts ── */
 .idml-diagram-fig{margin:1.2em 0;text-align:center}
 .idml-diagram-fig svg{max-width:100%;height:auto;display:inline-block}
+.idml-diagram-caption{font-size:.82rem;color:#555;font-style:italic;text-align:center;display:block;margin-top:.3em}
 
 /* ── Image placeholder ── */
 .img-placeholder{background:#f5f5f5;border:1.5px dashed #c0c0c0;border-radius:4px;padding:12px 8px;text-align:center;color:#999;font-size:.78em;font-family:sans-serif;min-height:60px;display:flex;align-items:center;justify-content:center;gap:6px}
@@ -2636,35 +2637,48 @@ async function parseIDML(buffer) {
   }
 
   // ── Groups (vector diagrams / flowcharts) ── extract as inline SVG ──────────
-  // Groups are InDesign-drawn vector objects; we parse their shapes and emit SVG.
   res.rawGroupGeo = res.rawGroupGeo || {};
 
-  // Resolve CMYK/swatch color names to CSS rgb()
+  // CMYK/swatch → CSS rgb()
   function idmlColor(name) {
     if (!name || name === 'None') return 'none';
     if (name === 'Paper') return '#fff';
-    if (name === 'Black' || name.includes('K=100')) return '#000';
+    if (name === 'Black' || /K=100\b/.test(name)) return '#000';
     if (name === 'White') return '#fff';
     const m = name.match(/C=(\d+(?:\.\d+)?)\s+M=(\d+(?:\.\d+)?)\s+Y=(\d+(?:\.\d+)?)\s+K=(\d+(?:\.\d+)?)/i);
     if (m) {
       const c=+m[1]/100, mv=+m[2]/100, y=+m[3]/100, k=+m[4]/100;
       return `rgb(${Math.round(255*(1-c)*(1-k))},${Math.round(255*(1-mv)*(1-k))},${Math.round(255*(1-y)*(1-k))})`;
     }
-    return '#555';
+    return '#444';
   }
 
-  // Convert an InDesign PathPointArray string region to SVG path data
-  function pathPointsToSVGd(region, closePath) {
+  // Extract attrs from a single XML tag string — order-independent
+  function gAttr(tag, name) {
+    const m = tag.match(new RegExp('\\b' + name + '="([^"]*)"'));
+    return m ? m[1] : null;
+  }
+
+  // Parse <PathPoint .../> elements in a chunk and build SVG path d string.
+  // Attributes can be in ANY order (XML spec allows this).
+  function pathPointsToSVGd(chunk, closePath) {
     const pts = [];
-    const pr = /Anchor="([^"]+)"\s+LeftDirection="([^"]+)"\s+RightDirection="([^"]+)"/g;
+    // Match each PathPoint element
+    const ppRe = /<PathPoint\s([^>]*?)\/?>/g;
     let pm2;
-    while ((pm2 = pr.exec(region)) !== null) {
-      const anc = pm2[1].split(/\s+/).map(Number);
-      const ld  = pm2[2].split(/\s+/).map(Number);
-      const rd  = pm2[3].split(/\s+/).map(Number);
-      pts.push({ ax:anc[0],ay:anc[1], lx:ld[0],ly:ld[1], rx:rd[0],ry:rd[1] });
+    while ((pm2 = ppRe.exec(chunk)) !== null) {
+      const attrs = pm2[1];
+      const ancRaw = gAttr(attrs, 'Anchor');
+      if (!ancRaw) continue;
+      const anc = ancRaw.split(/\s+/).map(Number);
+      if (anc.length < 2 || isNaN(anc[0])) continue;
+      const ldRaw = gAttr(attrs, 'LeftDirection');
+      const rdRaw = gAttr(attrs, 'RightDirection');
+      const ld = ldRaw ? ldRaw.split(/\s+/).map(Number) : anc;
+      const rd = rdRaw ? rdRaw.split(/\s+/).map(Number) : anc;
+      pts.push({ ax:anc[0], ay:anc[1], lx:ld[0]||anc[0], ly:ld[1]||anc[1], rx:rd[0]||anc[0], ry:rd[1]||anc[1] });
     }
-    if (pts.length < 1) return '';
+    if (!pts.length) return '';
     let d = `M ${pts[0].ax},${pts[0].ay}`;
     const n = pts.length;
     for (let i = 0; i < n - 1 + (closePath ? 1 : 0); i++) {
@@ -2672,110 +2686,147 @@ async function parseIDML(buffer) {
       const next = pts[(i+1) % n];
       const straight = cur.rx===cur.ax && cur.ry===cur.ay && next.lx===next.ax && next.ly===next.ay;
       if (straight) d += ` L ${next.ax},${next.ay}`;
-      else d += ` C ${cur.rx},${cur.ry} ${next.lx},${next.ly} ${next.ax},${next.ay}`;
+      else          d += ` C ${cur.rx},${cur.ry} ${next.lx},${next.ly} ${next.ax},${next.ay}`;
     }
     if (closePath) d += ' Z';
     return d;
   }
 
-  // For each spread, find Group elements and convert to SVG
+  // Extract the body of a <Group>...</Group> from a flat XML string starting at pos
+  function extractGroupBody(flat, startPos) {
+    let depth = 1, i = startPos;
+    while (i < flat.length && depth > 0) {
+      const open  = flat.indexOf('<Group',  i);
+      const close = flat.indexOf('</Group>', i);
+      if (close < 0) break;
+      if (open > 0 && open < close) { depth++; i = open + 6; }
+      else { depth--; if (depth === 0) return flat.slice(startPos, close); i = close + 8; }
+    }
+    // fallback: return up to 10 000 chars
+    return flat.slice(startPos, startPos + 10000);
+  }
+
+  // Strip self-closing and open TextFrame tags from a chunk (order-independent)
+  function stripTextFrames(chunk) {
+    // Remove self-closing: <TextFrame ... />
+    chunk = chunk.replace(/<TextFrame\s[^>]*?\/>/g, ' ');
+    // Remove open+close: <TextFrame ...>...</TextFrame>
+    chunk = chunk.replace(/<TextFrame\s[^>]*>[\s\S]*?<\/TextFrame>/g, ' ');
+    return chunk;
+  }
+
   for (const f of zip.file(/^Spreads\/Spread_.*\.xml$/)) {
     let xml2; try { xml2 = await f.async('text'); } catch(e) { continue; }
-    const flat2 = xml2.replace(/[\r\n\t]+/g,' ');
+    const flat2 = xml2.replace(/[\r\n\t]+/g, ' ');
     const spreadSelf2 = (/<Spread[^>]+Self="([^"]+)"/.exec(flat2)||[])[1];
     if (!spreadSelf2) continue;
 
-    // Match top-level Group opening tags (only direct children of Spread)
-    // We capture each Group by finding its Self ID and then parsing its content
-    const grpTagRe = /<Group\s+([^>]*?)(?:\s*>)/g;
+    // Find every <Group ...> opening tag
+    const grpTagRe = /<Group(\s[^>]*?)>/g;
     let gm;
     while ((gm = grpTagRe.exec(flat2)) !== null) {
       const gAttrs = gm[1];
-      const selfM2 = gAttrs.match(/\bSelf="([^"]+)"/);
-      if (!selfM2) continue;
-      const gId = selfM2[1];
-      const itM2 = gAttrs.match(/ItemTransform="([^"]+)"/);
-      const it2 = itM2 ? itM2[1].split(/\s+/).map(Number) : [1,0,0,1,0,0];
+      const gId = gAttr(gAttrs, 'Self');
+      if (!gId || res.rawGroupGeo[gId]) continue;
+
+      const itRaw = gAttr(gAttrs, 'ItemTransform');
+      const it2   = itRaw ? itRaw.split(/\s+/).map(Number) : [1,0,0,1,0,0];
       const tx2 = it2[4]||0, ty2 = it2[5]||0;
 
-      // Grab the Group body (up to 8000 chars — enough for most diagrams)
       const bodyStart = gm.index + gm[0].length;
-      const body = flat2.slice(bodyStart, bodyStart + 8000);
+      const body    = extractGroupBody(flat2, bodyStart);
+      const noTF    = stripTextFrames(body);
 
-      // Collect all PathPointArrays across child shapes (skip TextFrame paths)
-      // to determine bounding box
+      // Collect all anchor points to compute bounding box
       const allAnchors = [];
-      const noTF = body.replace(/<TextFrame[\s\S]*?(?:<\/TextFrame>|(?=<(?:Polygon|Rectangle|Oval|Path|GraphicLine|Group|\/Group)))/g,' ');
-      const anchRe = /Anchor="([^"]+)"/g;
-      let ar;
-      while ((ar = anchRe.exec(noTF)) !== null) {
-        const pp = ar[1].split(/\s+/).map(Number);
-        if (pp.length >= 2 && !isNaN(pp[0])) allAnchors.push(pp);
+      const anchRe2 = /\bAnchor="([^"]+)"/g;
+      let ar2;
+      while ((ar2 = anchRe2.exec(noTF)) !== null) {
+        const pp = ar2[1].split(/\s+/).map(Number);
+        if (pp.length >= 2 && !isNaN(pp[0]) && !isNaN(pp[1])) allAnchors.push(pp);
       }
       if (allAnchors.length < 2) continue;
 
-      const xs2 = allAnchors.map(p=>p[0]+tx2), ys2 = allAnchors.map(p=>p[1]+ty2);
-      const minX2=Math.min(...xs2), maxX2=Math.max(...xs2);
-      const minY2=Math.min(...ys2), maxY2=Math.max(...ys2);
-      const gW = maxX2-minX2, gH = maxY2-minY2;
-      if (gW < 10 || gH < 10) continue;
+      const xs2 = allAnchors.map(p => p[0] + tx2);
+      const ys2 = allAnchors.map(p => p[1] + ty2);
+      const minX2 = Math.min(...xs2), maxX2 = Math.max(...xs2);
+      const minY2 = Math.min(...ys2), maxY2 = Math.max(...ys2);
+      const gW = maxX2 - minX2, gH = maxY2 - minY2;
+      if (gW < 8 || gH < 8) continue;
 
-      // Build SVG elements for each child shape
+      // Build SVG path elements for each child shape
       const svgParts = [];
-      const shapeRe = /<(Polygon|Rectangle|Oval|GraphicLine|Path)\s+([^>]*?)(?:\s*\/>|\s*>)/g;
+      const shapeRe = /<(Polygon|Rectangle|Oval|GraphicLine|Path)(\s[^>]*?)(?:\/?>)/g;
       let sm;
       while ((sm = shapeRe.exec(noTF)) !== null) {
-        const tag2  = sm[1];
         const sAttr = sm[2];
-        const fillN  = (sAttr.match(/FillColor="([^"]+)"/) || [])[1] || 'None';
-        const strkN  = (sAttr.match(/StrokeColor="([^"]+)"/) || [])[1] || 'None';
-        const strkW  = parseFloat((sAttr.match(/StrokeWeight="([^"]+)"/) || [])[1] || '1');
-        const sItM   = sAttr.match(/ItemTransform="([^"]+)"/);
-        const sIt    = sItM ? sItM[1].split(/\s+/).map(Number) : [1,0,0,1,0,0];
-        const stx=sIt[4]||0, sty=sIt[5]||0;
+        const fillN = gAttr(sAttr, 'FillColor')   || 'None';
+        const strkN = gAttr(sAttr, 'StrokeColor') || 'None';
+        const strkW = parseFloat(gAttr(sAttr, 'StrokeWeight') || '1');
+        const sItRaw = gAttr(sAttr, 'ItemTransform');
+        const sIt = sItRaw ? sItRaw.split(/\s+/).map(Number) : [1,0,0,1,0,0];
+        const stx = sIt[4]||0, sty = sIt[5]||0;
 
-        const fill   = idmlColor(fillN);
-        const stroke = idmlColor(strkN);
-
-        // Find PathPointArray after this shape tag
-        const shpEnd = sm.index + sm[0].length;
-        const shpBody = noTF.slice(shpEnd, shpEnd + 2000);
-        const closePath = !(/<GeometryPathType[^>]*PathOpen="true"/.test(shpBody));
+        // Find the PathPointArray that follows this tag (up to 3000 chars ahead)
+        const shpEnd  = sm.index + sm[0].length;
+        const shpBody = noTF.slice(shpEnd, shpEnd + 3000);
+        const closePath = !(/PathOpen="true"/.test(shpBody.slice(0, 500)));
         const svgD = pathPointsToSVGd(shpBody, closePath);
         if (!svgD) continue;
 
-        // Translate path to viewBox-relative coords
-        const xlate = `translate(${(tx2+stx)-minX2},${(ty2+sty)-minY2})`;
-        svgParts.push(`<path transform="${xlate}" d="${svgD}" fill="${fill}" stroke="${stroke}" stroke-width="${strkW}" stroke-linejoin="round"/>`);
+        const xlate = `translate(${(tx2 + stx) - minX2},${(ty2 + sty) - minY2})`;
+        svgParts.push(
+          `<path transform="${xlate}" d="${svgD}" ` +
+          `fill="${idmlColor(fillN)}" stroke="${idmlColor(strkN)}" ` +
+          `stroke-width="${strkW}" stroke-linejoin="round" stroke-linecap="round"/>`
+        );
       }
 
-      // Add text labels from TextFrame children as foreignObject elements
-      const tfLabelRe = /<TextFrame\s+([^>]*?)(?:\s*\/>|\s*>)/g;
+      // Add inline text labels from TextFrame children (as foreignObject)
+      const tfLabelRe = /<TextFrame\s([^>]*?)(?:\/?>)/g;
       let tlm;
       while ((tlm = tfLabelRe.exec(body)) !== null) {
-        const ta = tlm[1];
-        const tbGbM = ta.match(/GeometricBounds="([^"]+)"/);
-        const tbItM = ta.match(/ItemTransform="([^"]+)"/);
-        const tbStM = ta.match(/ParentStory="([^"]+)"/);
-        if (!tbGbM || !tbStM) continue;
-        const gb3 = tbGbM[1].split(/\s+/).map(Number);
-        const tbit = tbItM ? tbItM[1].split(/\s+/).map(Number) : [1,0,0,1,0,0];
-        const lx = gb3[1]+(tbit[4]||0)+tx2-minX2;
-        const ly = gb3[0]+(tbit[5]||0)+ty2-minY2;
-        const lw = gb3[3]-gb3[1];
-        const lh = gb3[2]-gb3[0];
-        svgParts.push(`<foreignObject x="${lx}" y="${ly}" width="${lw}" height="${lh}" overflow="visible"><div xmlns="http://www.w3.org/1999/xhtml" style="font-size:7pt;text-align:center;font-family:sans-serif;color:#1a1a1a;line-height:1.2">${tbStM[1]}</div></foreignObject>`);
+        const ta    = tlm[1];
+        const gbRaw = gAttr(ta, 'GeometricBounds');
+        const stRaw = gAttr(ta, 'ParentStory');
+        if (!gbRaw || !stRaw) continue;
+        const tfItRaw = gAttr(ta, 'ItemTransform');
+        const tbit  = tfItRaw ? tfItRaw.split(/\s+/).map(Number) : [1,0,0,1,0,0];
+        const gb3   = gbRaw.split(/\s+/).map(Number);
+        const lx = gb3[1] + (tbit[4]||0) + tx2 - minX2;
+        const ly = gb3[0] + (tbit[5]||0) + ty2 - minY2;
+        const lw = Math.max(1, gb3[3] - gb3[1]);
+        const lh = Math.max(1, gb3[2] - gb3[0]);
+        // Resolve story text inline — stories are already parsed at this point
+        const tfStory = res.stories.find(s => s.id === stRaw);
+        const tfText  = tfStory
+          ? tfStory.blocks.map(b => b.spans.map(sp => sp.text).join('')).join(' ').trim()
+          : '';
+        if (!tfText) continue;
+        const tfEsc = tfText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        svgParts.push(
+          `<foreignObject x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" ` +
+          `width="${lw.toFixed(1)}" height="${lh.toFixed(1)}" overflow="visible">` +
+          `<div xmlns="http://www.w3.org/1999/xhtml" ` +
+          `style="font-size:7pt;text-align:center;font-family:Arial,sans-serif;` +
+          `color:#111;line-height:1.25;word-wrap:break-word;padding:1px">${tfEsc}</div>` +
+          `</foreignObject>`
+        );
       }
 
       if (!svgParts.length) continue;
 
-      const pad = 4;
-      const vb = `${-pad} ${-pad} ${gW+pad*2} ${gH+pad*2}`;
-      const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}" width="${Math.round(gW)}" height="${Math.round(gH)}" style="max-width:100%;height:auto;display:block;margin:0 auto">\n${svgParts.join('\n')}\n</svg>`;
+      const pad = 6;
+      const vb  = `${-pad} ${-pad} ${(gW + pad*2).toFixed(1)} ${(gH + pad*2).toFixed(1)}`;
+      const svgStr =
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}" ` +
+        `width="${Math.round(gW)}" height="${Math.round(gH)}" ` +
+        `style="max-width:100%;height:auto;display:block;margin:0 auto">\n` +
+        svgParts.join('\n') + `\n</svg>`;
 
       res.rawGroupGeo[gId] = {
         bounds:    `${minY2} ${minX2} ${maxY2} ${maxX2}`,
-        transform: itM2 ? itM2[1] : '1 0 0 1 0 0',
+        transform: itRaw || '1 0 0 1 0 0',
         type: 'diagram',
         svg: svgStr,
         spreadId: spreadSelf2,
@@ -3283,18 +3334,10 @@ function blocksToHTML(blocks) {
     // These are InDesign-drawn flowcharts/diagrams that have no image file.
     // Treat them as figcaptions with a PDF-extract placeholder.
     const plainText = inner.replace(/<[^>]+>/g,'').trim();
-    if((m.tag==='p'||m.tag==='figcaption') && /^Figure\s*[:\u2013\-]/i.test(plainText)){
+    if((m.tag==='p'||m.tag==='figcaption') && /^Figure\s*[:–\-]/i.test(plainText)){
       flush();
-      const captionText = plainText.replace(/^Figure\s*[:\u2013\-]\s*/i,'').trim();
-      const captionSlug = captionText.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
-      nodes.push(`<figure class="idml-vector-figure" data-caption="${esc(captionText)}" data-slug="${captionSlug}">
-  <div class="vector-fig-placeholder">
-    <div class="vfp-icon">◈</div>
-    <div class="vfp-label">Diagram: <strong>${captionText}</strong></div>
-    <div class="vfp-note">Vector diagram from PDF — use PDF Figure Extractor tool to add this image</div>
-  </div>
-  <figcaption class="idml-caption">Figure: ${captionText}</figcaption>
-</figure>`);
+      const captionText = plainText.replace(/^Figure\s*[:–\-]\s*/i,'').trim();
+      nodes.push(`<figcaption class="idml-caption idml-diagram-caption">Figure: ${esc(captionText)}</figcaption>`);
       continue;
     }
 
