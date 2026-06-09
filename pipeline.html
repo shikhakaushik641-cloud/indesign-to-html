@@ -2070,6 +2070,36 @@ a{color:var(--blue-mid);text-decoration:underline}
 /* ── SUP / SUB ── */
 sup,sub{font-size:.72em;line-height:0}
 
+/* ── NUMBERED & ROMAN LISTS ── */
+.idml-list-numbered{list-style-type:decimal;margin:.6em 0 .6em 1.75em;padding:0}
+.idml-list-roman{list-style-type:lower-roman;margin:.6em 0 .6em 1.75em;padding:0}
+.idml-list-numbered li,.idml-list-roman li{margin-bottom:.5em;padding-left:.25em;line-height:1.7}
+
+/* ── KNOWLEDGE HUB BOX ── */
+.idml-box-heading{
+  font-size:1rem;font-weight:700;font-family:var(--font-head);
+  background:var(--blue);color:#fff;
+  padding:.45em .85em;margin:1.5em 0 0;
+  border-radius:5px 5px 0 0;display:block;
+  border:1.5px solid var(--blue);border-bottom:none;
+}
+.idml-box-heading + *,
+.idml-box-heading ~ ul,
+.idml-box-heading ~ ol,
+.idml-box-heading ~ p{
+  background:var(--bg-alt);border:1.5px solid var(--border);
+  border-top:none;border-radius:0 0 5px 5px;
+  padding:.7em 1em;margin-top:0;margin-bottom:1.5em;
+}
+
+/* ── QUESTION NUMBERED LISTS ── */
+.idml-question ol,.idml-question ul{margin:.4em 0 0 1.25em;padding:0}
+.idml-question li{margin-bottom:.4em;line-height:1.65}
+
+/* ── ANSWER KEY NUMBERED ── */
+.idml-answer-key ol,.idml-answer-key ul{margin:.4em 0 0 1.25em;padding:0}
+.idml-answer-key li{margin-bottom:.35em}
+
 @media print{body{padding:0;font-size:11pt}.idml-h1,.idml-chapter-title{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 `;
 
@@ -2529,7 +2559,10 @@ function parseIDMLY(boundsStr){
 // InDesign packs multiple sub-items into one ParagraphStyleRange:
 // [Bold:'Biotic Resources:'][Normal:' The resources...'][Bold:'Abiotic Resources:']...
 // Detect and split into separate blocks so each term gets its own <li>.
+// ── Split packed bullet blocks ─────────────────────────────────────────────
+// Handles: "BoldTerm:content BoldTerm2:content" packed into one ParagraphStyleRange
 function splitPackedBullets(spans, styleName) {
+  // ── Method 1: span-level detection (bold span follows content) ──────────
   let hasPriorContent = false, splitCount = 0;
   for (const sp of spans) {
     const t = (sp.text||'').trim();
@@ -2538,41 +2571,111 @@ function splitPackedBullets(spans, styleName) {
     if (bold && hasPriorContent && t[0] === t[0].toUpperCase() && !t.startsWith('(')) splitCount++;
     hasPriorContent = true;
   }
-  if (splitCount === 0) return null;
-  const result = []; let cur = []; hasPriorContent = false;
-  for (const sp of spans) {
-    const t = (sp.text||'').trim();
-    const bold = sp.props?.fontStyle?.toLowerCase().includes('bold');
-    const isNew = bold && hasPriorContent && t.length > 0 && t[0] === t[0].toUpperCase() && !t.startsWith('(');
-    if (isNew && cur.length) { result.push({styleName, spans:[...cur]}); cur = []; }
-    cur.push(sp);
-    if (t) hasPriorContent = true;
+  if (splitCount > 0) {
+    const result = []; let cur = []; hasPriorContent = false;
+    for (const sp of spans) {
+      const t = (sp.text||'').trim();
+      const bold = sp.props?.fontStyle?.toLowerCase().includes('bold');
+      const isNew = bold && hasPriorContent && t.length > 0 && t[0] === t[0].toUpperCase() && !t.startsWith('(');
+      if (isNew && cur.length) { result.push({styleName, spans:[...cur]}); cur = []; }
+      cur.push(sp);
+      if (t) hasPriorContent = true;
+    }
+    if (cur.length) result.push({styleName, spans:[...cur]});
+    if (result.length > 1) return result;
   }
-  if (cur.length) result.push({styleName, spans:[...cur]});
-  return result.length > 1 ? result : null;
+
+  // ── Method 2: HTML-level detection ──────────────────────────────────────
+  // Handle: <strong>Term:</strong>content<strong>Term2:</strong>content2
+  // Split on <strong> that appears after non-whitespace content (not at start)
+  const html = spans.map(sp => {
+    const t = esc(sp.text||'');
+    if (!t) return '';
+    const p = sp.props||{};
+    let out = t;
+    if (p.superscript) out = `<sup>${out}</sup>`;
+    if (p.subscript)   out = `<sub>${out}</sub>`;
+    if (p.fontStyle) {
+      const fs = p.fontStyle.toLowerCase();
+      if (fs.includes('bold') && fs.includes('italic')) out = `<strong><em>${out}</em></strong>`;
+      else if (fs.includes('bold') || fs.includes('heavy')) out = `<strong>${out}</strong>`;
+      else if (fs.includes('italic') || fs.includes('oblique')) out = `<em>${out}</em>`;
+    }
+    return out;
+  }).join('');
+
+  // Detect: <strong>Word:</strong> pattern appearing after prior content
+  const boldTermPattern = /<strong>([A-Z][^<]{0,40}?:?)<\/strong>/g;
+  const matches = [...html.matchAll(boldTermPattern)];
+  if (matches.length < 2) return null;
+
+  // Only split if a bold term appears mid-string (not at position 0)
+  const firstMatchIdx = matches[0].index;
+  const hasMidBold = matches.some(m => m.index > 5);
+  if (!hasMidBold) return null;
+
+  // Split the HTML string at each bold term that appears after content
+  // Pattern: <strong>Capital word(s) ending with colon</strong> mid-string
+  const splitParts = html.split(/(?=<strong>[A-Z][A-Za-z\s\-]{1,50}:<\/strong>)/);
+  const cleaned = splitParts.map(p=>p.trim()).filter(p=>p && p.replace(/<[^>]+>/g,'').trim().length > 2);
+  if (cleaned.length < 2) return null;
+
+  // Return as pseudo-blocks with pre-rendered HTML
+  return cleaned.map(htmlFrag => ({
+    styleName,
+    spans: [{text: '\uE003', props: {_preRendered: htmlFrag}}],
+    _preRendered: htmlFrag
+  }));
 }
 
-// Split MCQ options that use tabs as column separators
-// Pattern: "(a)\ttext(b)\ttext(c)\ttext" in ONE block → split into separate <li>
+// ── Split numbered items packed inline ────────────────────────────────────
+// Pattern: "1.text 2.text 3.text" or "1. text 2. text" → separate <li> or <p> per item
+// Works on rendered HTML string (inner)
+function splitNumberedItems(inner) {
+  const stripped = inner.replace(/<[^>]+>/g,'');
+  // Must have at least two numbered markers: 1. ... 2. ... OR (1) ... (2) ...
+  const hasNumbered = /\d+\.\s+\S/.test(stripped) && stripped.match(/\d+\./g)?.length >= 2;
+  if (!hasNumbered) return null;
+
+  // Split on digit followed by period at word boundary, but only when preceded by content
+  // Use lookahead to split before "1." "2." etc. that follow non-whitespace content
+  const parts = inner.split(/(?<=\S\s{0,3})(?=<strong>\d+\.<\/strong>|(?<![<\w])\d+\.(?!\d))/);
+  if (parts.length < 2) {
+    // Try splitting on bold number markers
+    const parts2 = inner.split(/(?=<strong>\s*\d+[\.\)]\s*<\/strong>)/);
+    if (parts2.length < 2) return null;
+    return parts2.map(p=>p.trim()).filter(Boolean);
+  }
+  return parts.map(p=>p.trim()).filter(Boolean);
+}
+
+// ── Split roman numeral / alpha sub-items ─────────────────────────────────
+// Pattern: "(i)text(ii)text(iii)text" inline → separate items
+function splitRomanItems(inner) {
+  const stripped = inner.replace(/<[^>]+>/g,'');
+  // Detect packed roman numerals or alpha: (i), (ii), (iii) OR (a), (b), (c)
+  const romanPat = /\(i{1,3}v?\)\s*\S.*\(i{1,3}v?i?\)/;
+  const alphaPat = /\([a-d]\)\s*\S.*\([b-e]\)/;
+  if (!romanPat.test(stripped) && !alphaPat.test(stripped)) return null;
+
+  // Split before each ( marker that starts a new item
+  const parts = inner.split(/(?=\([ivxIVX]{1,4}\)\s*(?!<))|(?=\([a-eA-E]\)\s*(?!<))/);
+  const items = parts.map(p=>p.trim()).filter(Boolean);
+  if (items.length < 2) return null;
+  return items;
+}
+
+// ── Split MCQ options ─────────────────────────────────────────────────────
+// Pattern: "(a)\ttext(b)\ttext" → separate <li> per option
 function splitMCQOptions(inner, tag, cls) {
-  // Detect: starts with (a) or (A) or (i) followed by tab, has (b)/(B)/(ii)
-  // Use a regex that detects option labels: (a), (b), (A), (B), (i), (ii) etc.
-  const stripped = inner.replace(/<[^>]+>/g,''); // strip tags to test pattern
-  const optPattern = /^\s*\([a-dA-D]\)\s*\t|^\s*\([ivxIVX]+\)\s*\t/;
+  const stripped = inner.replace(/<[^>]+>/g,'');
+  const optPattern = /^\s*\([a-dA-D]\)\s*[\t\s]|^\s*\([ivxIVX]+\)\s*[\t\s]/;
   if (!optPattern.test(stripped)) return null;
 
-  // Split on \t followed by text that starts a new option marker, or on the option markers themselves
-  // Strategy: find all (a)\t (b)\t etc. and split there
-  // We work on the raw inner HTML preserving tags
-  // Split by \t pattern between option markers
   const parts = inner.split(/(?=\([a-dA-D]\))/);
   if (parts.length < 2) return null;
 
-  const items = parts.map(p => p.trim()).filter(Boolean).map(p => {
-    // Clean leading/trailing tabs
-    return p.replace(/^\t+|\t+$/g,'').trim();
-  }).filter(Boolean);
-
+  const items = parts.map(p=>p.trim().replace(/^\t+|\t+$/g,'').trim()).filter(Boolean);
   if (items.length < 2) return null;
   return items.map(item => `  <${tag} class="${cls}">${item}</${tag}>`).join('\n');
 }
@@ -2619,12 +2722,17 @@ function blocksToHTML(blocks) {
     if(m.listType){
       if(lt&&lt!==m.listType)flush();
       lt=m.listType;
-      // Try to split packed bullet sub-items (e.g. Biotic/Abiotic in one PSR)
+      // Try to split packed bullet sub-items (e.g. Biotic/Abiotic, Stocks/Reserves in one PSR)
       const packedSplit = splitPackedBullets(b.spans, b.styleName);
       if(packedSplit) {
         packedSplit.forEach(pb => {
-          const pInner = spansToHTML(pb.spans);
-          lb.push(`  <${m.tag} class="${m.cls}">${pInner}</${m.tag}>`);
+          // Handle pre-rendered HTML fragments (Method 2 result)
+          if(pb._preRendered){
+            lb.push(`  <${m.tag} class="${m.cls}">${pb._preRendered}</${m.tag}>`);
+          } else {
+            const pInner = spansToHTML(pb.spans);
+            lb.push(`  <${m.tag} class="${m.cls}">${pInner}</${m.tag}>`);
+          }
         });
       } else {
         const split=splitMCQOptions(inner,m.tag,m.cls);
@@ -2638,15 +2746,26 @@ function blocksToHTML(blocks) {
         // Figcaption that follows an image block — wrap together
         const lastFig = nodes.length>0 && nodes[nodes.length-1].startsWith('<figure>');
         if(lastFig){
-          // Append caption to the existing figure
           const fig = nodes.pop();
           nodes.push(fig.replace('</figure>', `  <figcaption${cls}>${inner}</figcaption>\n</figure>`));
         } else {
-          // Standalone figcaption — look for nearest unmatched image in queue
           nodes.push(`<figure>\n  <figcaption${cls}>${inner}</figcaption>\n</figure>`);
         }
+      } else {
+        // ── Try to split packed numbered items (1. text 2. text) ──
+        const numberedParts = splitNumberedItems(inner);
+        if(numberedParts && numberedParts.length > 1){
+          nodes.push(`<ol class="idml-list idml-list-numbered">\n${numberedParts.map(p=>`  <li class="${m.cls||'idml-body'}">${p}</li>`).join('\n')}\n</ol>`);
+        } else {
+          // ── Try to split packed roman/alpha sub-items (i)text(ii)text ──
+          const romanParts = splitRomanItems(inner);
+          if(romanParts && romanParts.length > 1){
+            nodes.push(`<ol class="idml-list idml-list-roman">\n${romanParts.map(p=>`  <li class="${m.cls||'idml-body'}">${p}</li>`).join('\n')}\n</ol>`);
+          } else {
+            nodes.push(`<${m.tag}${cls}>${inner}</${m.tag}>`);
+          }
+        }
       }
-      else nodes.push(`<${m.tag}${cls}>${inner}</${m.tag}>`);
     }
   }
   flush();
