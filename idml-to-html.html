@@ -772,6 +772,7 @@ function parsePR(pr) {
 }
 
 // Extract image filenames from Rectangle elements inside a node
+// Recurses through Group, CharacterStyleRange, ParagraphStyleRange, Cell, Story children
 function extractImageRects(node){
   const results=[];
   if(!node||typeof node!=='object') return results;
@@ -780,11 +781,14 @@ function extractImageRects(node){
   rects.forEach(rect=>{
     const fname = getRectImageFile(rect);
     if(fname) results.push(fname);
+    // Rectangle may itself contain nested Rectangles (rare but possible)
+    results.push(...extractImageRects(rect));
   });
-  // Check inside Group children
-  const groups = node.Group ? (Array.isArray(node.Group)?node.Group:[node.Group]) : [];
-  groups.forEach(grp=>{
-    results.push(...extractImageRects(grp));
+  // Recurse into all container-type children
+  const containers = ['Group','CharacterStyleRange','ParagraphStyleRange','Cell','Story','TextFrame'];
+  containers.forEach(type=>{
+    const children = node[type] ? (Array.isArray(node[type])?node[type]:[node[type]]) : [];
+    children.forEach(child=>{ results.push(...extractImageRects(child)); });
   });
   return results;
 }
@@ -885,11 +889,72 @@ function getOrderedBlocks(parsed) {
   if(!parsed.spreads.length) return parsed.stories.flatMap(s=>s.blocks);
   const sm={}; parsed.stories.forEach(s=>{sm[s.id]=s;});
   const fm={}; const af=parsed.spreads.flatMap(s=>s.frames); af.forEach(f=>{fm[f.id]=f;});
-  const visited=new Set(),blocks=[];
-  const walk=f=>{if(!f)return;const sid=f.storyRef;if(sid&&!visited.has(sid)){visited.add(sid);const st=sm[sid];if(st)blocks.push(...st.blocks);}if(f.next&&fm[f.next])walk(fm[f.next]);};
-  af.filter(f=>!f.prev||!fm[f.prev]).forEach(walk);
-  parsed.stories.forEach(s=>{if(!visited.has(s.id))blocks.push(...s.blocks);});
-  return blocks;
+
+  // Build per-spread ordered block lists, interleaving image frames by Y position
+  const allBlocks=[];
+  const visitedStories=new Set();
+
+  for(const spread of parsed.spreads){
+    const frames=spread.frames||[];
+
+    // Separate text-frame chains from standalone image frames
+    const textFrameStarts=frames.filter(f=>f.storyRef&&(!f.prev||!fm[f.prev]));
+    const imageFrames=frames.filter(f=>f.type==='image'&&f.filename);
+
+    // Collect text-frame chains with their Y-position (top of GeometricBounds)
+    const textChains=[]; // [{yTop, blocks:[]}]
+    const walkChain=f=>{
+      if(!f) return;
+      const sid=f.storyRef;
+      const blocks=[];
+      if(sid&&!visitedStories.has(sid)){
+        visitedStories.add(sid);
+        const st=sm[sid];
+        if(st) blocks.push(...st.blocks);
+      }
+      if(f.next&&fm[f.next]) blocks.push(...walkChain_collect(fm[f.next],visitedStories,sm));
+      // Y position: GeometricBounds = "yMin xMin yMax xMax" (InDesign coordinate string)
+      const yTop=parseIDMLY(f.bounds);
+      textChains.push({yTop,blocks});
+    };
+    const walkChain_collect=(f,vis,stories)=>{
+      if(!f) return [];
+      const sid=f.storyRef; const out=[];
+      if(sid&&!vis.has(sid)){vis.add(sid);const st=stories[sid];if(st)out.push(...st.blocks);}
+      if(f.next&&fm[f.next]) out.push(...walkChain_collect(fm[f.next],vis,stories));
+      return out;
+    };
+    textFrameStarts.forEach(walkChain);
+
+    // Build image blocks for standalone image frames
+    const imgBlocks=imageFrames.map(f=>({
+      styleName:'_image_',
+      imageFile:f.filename,
+      yTop:parseIDMLY(f.bounds),
+      spans:[]
+    }));
+
+    // Merge: interleave image blocks into text chains by Y position
+    // Strategy: for each image, insert it before the first text chain whose yTop > image yTop
+    // Build a flat ordered list of {yTop, items:[blocks]}
+    const segments=[
+      ...textChains.map(c=>({yTop:c.yTop,blocks:c.blocks})),
+      ...imgBlocks.map(ib=>({yTop:ib.yTop,blocks:[{styleName:'_image_',imageFile:ib.imageFile,spans:[]}]}))
+    ];
+    segments.sort((a,b)=>a.yTop-b.yTop);
+    segments.forEach(seg=>allBlocks.push(...seg.blocks));
+  }
+
+  // Append any stories not reached via spread frames
+  parsed.stories.forEach(s=>{if(!visitedStories.has(s.id))allBlocks.push(...s.blocks);});
+  return allBlocks;
+}
+
+function parseIDMLY(boundsStr){
+  // GeometricBounds = "yMin xMin yMax xMax" space-separated
+  if(!boundsStr) return 9999;
+  const parts=String(boundsStr).trim().split(/\s+/);
+  return parts.length>=1 ? parseFloat(parts[0])||9999 : 9999;
 }
 
 // ── Split packed bullet blocks ────────────────────────────────
@@ -1125,15 +1190,37 @@ function resetUI(){
   $('dropzone').style.display='';
   hideError(); setStep(0);
 }
-function setFile(f){
+async function setFile(f){
   if(!f||!f.name.toLowerCase().endsWith('.idml')){showError('Please select a .idml file.');return;}
   hideError(); selFile=f;
+  window._parsedLinkedFiles = []; // reset
   $('fc-name').textContent=f.name;
   $('fc-size').textContent=(f.size/1024).toFixed(0)+' KB';
   $('file-card').classList.add('visible');
   $('btn-convert').classList.add('visible');
   $('img-panel').style.display='';
   setStep(0);
+
+  // Lightweight pre-scan: extract linked image filenames from the IDML zip
+  // so updateMissingImages and the convert guard work before full conversion
+  try {
+    const buf = await f.arrayBuffer();
+    const z = await JSZip.loadAsync(buf);
+    const linkRe = /LinkResourceURI="([^"]+)"/g;
+    const found = new Set();
+    for(const zf of Object.values(z.files)){
+      if(!/^(Spreads|Stories|Resources)\//i.test(zf.name)||zf.dir) continue;
+      const txt = await zf.async('string');
+      let m;
+      while((m=linkRe.exec(txt))!==null){
+        const raw = decodeURIComponent(m[1].split('/').pop().split('\\').pop());
+        if(/\.(png|jpe?g|gif|tiff?|bmp|eps|svg)$/i.test(raw)) found.add(raw);
+      }
+    }
+    const linkedFiles = [...found];
+    window._parsedLinkedFiles = linkedFiles;
+    if(linkedFiles.length) updateMissingImages(linkedFiles);
+  } catch(e) { /* pre-scan failed silently — full parse will catch it */ }
 }
 
 // ── Image file drop zone ───────────────────────────────────────
@@ -1186,6 +1273,19 @@ $('file-remove').addEventListener('click',()=>{selFile=null;$('file-card').class
 
 $('btn-convert').addEventListener('click',async()=>{
   if(!selFile) return;
+
+  // Guard: if the IDML has linked images but none have been uploaded, warn before proceeding
+  const linkedCount = window._parsedLinkedFiles ? window._parsedLinkedFiles.length : 0;
+  const uploadedCount = Object.keys(imageFiles).length;
+  if(linkedCount > 0 && uploadedCount === 0){
+    const go = confirm(
+      `⚠ This IDML has ${linkedCount} linked image(s) but you haven't loaded any image files yet.\n\n` +
+      `Images will appear as grey placeholders in the output.\n\n` +
+      `Click OK to convert anyway, or Cancel to go back and add images in Step 2.`
+    );
+    if(!go) return;
+  }
+
   hideError();
   $('dropzone').style.display='none';
   $('file-card').classList.remove('visible');
@@ -1201,6 +1301,7 @@ $('btn-convert').addEventListener('click',async()=>{
     window._parsedIDML = parsed;
     // Update missing images UI
     if(parsed.linkedImageFiles?.length){
+      window._parsedLinkedFiles = parsed.linkedImageFiles;
       updateMissingImages(parsed.linkedImageFiles);
     }
     setStep(2); setProgress(55,'Resolving style inheritance…',`${parsed.stories.length} stories · ${Object.keys(parsed.paragraphStyles).length} paragraph styles`); await tick();
