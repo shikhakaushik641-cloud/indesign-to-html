@@ -373,12 +373,18 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;cursor:po
       <div class="sec-label">Step 2 — Add linked image files <span style="color:var(--accent2)">(PNG, JPG, TIFF)</span></div>
       <div class="img-upload-panel" id="idml-img-panel">
         <div class="img-upload-head">
-          <span>Image files from your InDesign Links folder</span>
+          <span>Image files from your InDesign <strong>Links</strong> folder</span>
           <span id="idml-img-count" style="color:var(--green)"></span>
         </div>
-        <div class="img-dropzone" id="idml-img-dz">
-          <div style="font-size:.8rem;color:var(--muted)">📷 Drop image files here or click to browse</div>
-          <input type="file" id="idml-img-input" accept="image/*,.tif,.tiff,.eps" multiple style="display:none"/>
+        <div style="display:flex;gap:.5rem;margin-bottom:.5rem">
+          <div class="img-dropzone" id="idml-img-dz" style="flex:1">
+            <div style="font-size:.8rem;color:var(--muted)">📷 Drop individual image files here</div>
+            <input type="file" id="idml-img-input" accept="image/*,.tif,.tiff,.eps" multiple style="display:none"/>
+          </div>
+          <button class="btn" id="idml-folder-btn" title="Upload entire Links folder" style="flex-shrink:0;font-size:.78rem;padding:.4rem .75rem">
+            📁 Upload Links Folder
+            <input type="file" id="idml-folder-input" webkitdirectory multiple style="display:none"/>
+          </button>
         </div>
         <div class="img-file-list" id="idml-img-list"></div>
         <div class="img-missing" id="idml-img-missing"></div>
@@ -1094,6 +1100,13 @@ imgDz.addEventListener('dragover',e=>{e.preventDefault();imgDz.style.background=
 imgDz.addEventListener('dragleave',()=>imgDz.style.background='');
 imgDz.addEventListener('drop',e=>{e.preventDefault();imgDz.style.background='';handleImgFiles([...e.dataTransfer.files]);});
 $('idml-img-input').addEventListener('change',e=>{handleImgFiles([...e.target.files]);e.target.value='';});
+// Folder upload button
+$('idml-folder-btn').addEventListener('click',e=>{if(e.target.tagName!=='INPUT')$('idml-folder-input').click();});
+$('idml-folder-input').addEventListener('change',e=>{
+  const imgFiles=[...e.target.files].filter(f=>/\.(png|jpe?g|gif|tiff?|bmp|eps|svg)$/i.test(f.name));
+  handleImgFiles(imgFiles);
+  e.target.value='';
+});
 
 async function handleImgFiles(files){
   for(const f of files){
