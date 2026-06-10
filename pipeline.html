@@ -915,11 +915,14 @@ window._parsedLinkedFiles=[];
 function normImageName(s){
   return decodeURIComponent(s||'').toLowerCase().replace(/[^a-z0-9.]/g,'_');
 }
+function stripAllExt(s){ return s.replace(/(?:\.[a-z0-9]{1,5})+$/i,''); }
 function findImage(linkFilename){
   const target=normImageName(linkFilename);
+  const tStem=stripAllExt(target);   // e.g. 'chem.1_1' from 'chem.1_1.wmf'
   for(const[k,v]of Object.entries(imageFiles)){
-    if(normImageName(k)===target) return v;
-    if(normImageName(k).replace(/\.[^.]+$/,'')=== target.replace(/\.[^.]+$/,'')) return v;
+    const nk=normImageName(k);
+    if(nk===target) return v;                        // exact match
+    if(stripAllExt(nk)===tStem && tStem.length>2) return v;  // stem match
   }
   return null;
 }
@@ -3403,11 +3406,13 @@ function extractImageRects(node){
 
 function getRectImageFile(rect){
   if(!rect) return null;
-  // Link lives inside Rectangle > Image > Link (not directly in Rectangle)
+  // Link may live inside Rectangle > Image|EPS|PDF|WMF > Link
   let lnk = rect.Link;
-  if(!lnk && rect.Image){
-    const img = Array.isArray(rect.Image) ? rect.Image[0] : rect.Image;
-    lnk = img && img.Link;
+  for(const _key of ['Image','EPS','PDF','WMF']){
+    if(!lnk && rect[_key]){
+      const _child = Array.isArray(rect[_key]) ? rect[_key][0] : rect[_key];
+      lnk = _child && _child.Link;
+    }
   }
   if(!lnk) return null;
   const link = Array.isArray(lnk)?lnk[0]:lnk;
@@ -3415,7 +3420,7 @@ function getRectImageFile(rect){
   if(!uri) return null;
   const raw = uri.split('/').pop().split('\\').pop();
   const fname = decodeURIComponent(raw);
-  if(/\.(png|jpe?g|gif|svg|eps|tiff?|bmp)$/i.test(fname)) return fname;
+  if(/\.(png|jpe?g|gif|svg|eps|tiff?|bmp|wmf|emf)$/i.test(fname)) return fname;
   return null;
 }
 
