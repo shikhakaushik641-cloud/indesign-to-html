@@ -1164,26 +1164,33 @@ async function extractImagesFromPDF(pdfBuf, meta, onProgress){
             ictx.putImageData(idata,0,0);
             dataURL=ic.toDataURL('image/jpeg',0.93);
           }
-          allVisualRegions.push({pgNum,x,y,w,h,dataURL});
+          allVisualRegions.push({pgNum,x,y,w,h,dataURL,pageH:pageH1});
         } else if(fn===pdfjsLib.OPS.paintFormXObject){
           // Form XObjects = EPS/WMF/flowcharts — position only, crop from canvas
           const m=ctmStack[ctmStack.length-1];
           const w=Math.abs(m[0])||Math.abs(m[2]);
           const h=Math.abs(m[3])||Math.abs(m[1]);
           const x=m[4], y=pageH1-m[5]-h;
-          if(w>=20&&h>=20) allVisualRegions.push({pgNum,x,y,w,h,dataURL:null});
+          if(w>=20&&h>=20) allVisualRegions.push({pgNum,x,y,w,h,dataURL:null,pageH:pageH1});
         }
       }
     }
 
-    // Remove repeated header/footer elements (same size on 3+ pages)
+    // Remove repeated header/footer elements and content-area filter
     const sizeHist={};
     allVisualRegions.forEach(r=>{
       const k=`${Math.round(r.w)}_${Math.round(r.h)}`;
       sizeHist[k]=(sizeHist[k]||0)+1;
     });
     const dedupedRegions = allVisualRegions
-      .filter(r => sizeHist[`${Math.round(r.w)}_${Math.round(r.h)}`] <= 2)
+      .filter(r => {
+        const k=`${Math.round(r.w)}_${Math.round(r.h)}`;
+        if(sizeHist[k] >= 3) return false;          // repeated = logo/header/footer
+        if(r.y < 55) return false;                  // header zone
+        if(r.y + r.h > (r.pageH||842) - 40) return false;  // footer zone
+        if(r.w < 75 || r.h < 45) return false;     // too small to be a content image
+        return true;
+      })
       .sort((a,b)=>a.pgNum-b.pgNum||a.y-b.y);
 
     // PHASE 3: Match remaining unresolved images to visual regions.
@@ -4965,40 +4972,109 @@ async function extractPDFContent(doc, fromPage, toPage, h1T, h2T, doImages, doMe
       }
     }
 
-    // -- Image extraction: render canvas + scan all visual regions (raster + vector) --
+    // -- Image extraction: 2-pass approach --
+    // Pass 1 (all pages): collect positions without rendering.
+    // Filter out header/footer/repeated elements.
+    // Pass 2: render only pages with content images and crop.
     if(doImages){
-      try{
-        const SCALE=2.0;
-        const vp2=page.getViewport({scale:SCALE});
-        const offCanvas=document.createElement('canvas');
-        offCanvas.width=Math.round(vp2.width); offCanvas.height=Math.round(vp2.height);
-        await page.render({canvasContext:offCanvas.getContext('2d'),viewport:vp2}).promise;
-        const pageH1=page.getViewport({scale:1}).height;
+      const SCALE = 2.0;
+      const HEADER_PT = 60;   // ignore top 60pt (logos, chapter headers)
+      const FOOTER_PT = 45;   // ignore bottom 45pt (page numbers, footers)
+      const MIN_W = 80;       // minimum width for a content image (points)
+      const MIN_H = 50;       // minimum height
+      const REPEAT_THRESH = 3; // same size on N+ pages = decorative
 
-        const mulM=(a,b)=>[a[0]*b[0]+a[2]*b[1],a[1]*b[0]+a[3]*b[1],a[0]*b[2]+a[2]*b[3],a[1]*b[2]+a[3]*b[3],a[0]*b[4]+a[2]*b[5]+a[4],a[1]*b[4]+a[3]*b[5]+a[5]];
-        const ops=await page.getOperatorList();
-        const ctmStack=[[1,0,0,1,0,0]];
-        const pageRegions=[];
+      const mulM=(a,b)=>[a[0]*b[0]+a[2]*b[1],a[1]*b[0]+a[3]*b[1],
+        a[0]*b[2]+a[2]*b[3],a[1]*b[2]+a[3]*b[3],
+        a[0]*b[4]+a[2]*b[5]+a[4],a[1]*b[4]+a[3]*b[5]+a[5]];
 
-        for(let i=0;i<ops.fnArray.length;i++){
-          const fn=ops.fnArray[i],args=ops.argsArray[i];
-          if(fn===pdfjsLib.OPS.save) ctmStack.push([...ctmStack[ctmStack.length-1]]);
-          else if(fn===pdfjsLib.OPS.restore){if(ctmStack.length>1)ctmStack.pop();}
-          else if(fn===pdfjsLib.OPS.transform) ctmStack[ctmStack.length-1]=mulM(ctmStack[ctmStack.length-1],args);
-          else if(fn===pdfjsLib.OPS.paintImageXObject||fn===pdfjsLib.OPS.paintImageXObjectRepeat||fn===pdfjsLib.OPS.paintInlineImageXObject){
-            const m=ctmStack[ctmStack.length-1];
-            const w=Math.abs(m[0])||Math.abs(m[2]);
-            const h=Math.abs(m[3])||Math.abs(m[1]);
-            const x=m[4],y=pageH1-m[5]-h;
-            if(w<30||h<30) continue;
-            const name=args[0];
-            const key=p+'_'+name;
-            if(seenImages.has(key)) continue;
-            seenImages.add(key);
-            let dataURL=null;
+      // ── PASS 1: scan operator lists ──────────────────────────────────────
+      const allCandidates = []; // {page,x,y,w,h,pageH,pageW,imgName,isForm}
+
+      for(let p=fromPage; p<=toPage; p++){
+        onProgress('Scanning page '+p+' of '+toPage+'…', 5+Math.round(60*(p-fromPage)/(toPage-fromPage+1)), 'Finding images');
+        await tick();
+        try{
+          const page = await doc.getPage(p);
+          const pageH1 = page.getViewport({scale:1}).height;
+          const pageW1 = page.getViewport({scale:1}).width;
+          const ops = await page.getOperatorList();
+          const ctmStack = [[1,0,0,1,0,0]];
+
+          for(let i=0;i<ops.fnArray.length;i++){
+            const fn=ops.fnArray[i],args=ops.argsArray[i];
+            if(fn===pdfjsLib.OPS.save) ctmStack.push([...ctmStack[ctmStack.length-1]]);
+            else if(fn===pdfjsLib.OPS.restore){if(ctmStack.length>1)ctmStack.pop();}
+            else if(fn===pdfjsLib.OPS.transform) ctmStack[ctmStack.length-1]=mulM(ctmStack[ctmStack.length-1],args);
+            else if(fn===pdfjsLib.OPS.paintImageXObject||fn===pdfjsLib.OPS.paintImageXObjectRepeat||fn===pdfjsLib.OPS.paintInlineImageXObject){
+              const m=ctmStack[ctmStack.length-1];
+              const w=Math.abs(m[0])||Math.abs(m[2]);
+              const h=Math.abs(m[3])||Math.abs(m[1]);
+              const x=m[4], y=pageH1-m[5]-h;
+              if(w>=MIN_W&&h>=MIN_H)
+                allCandidates.push({page:p,x,y,w,h,pageH:pageH1,pageW:pageW1,imgName:args[0],isForm:false});
+            }
+            else if(fn===pdfjsLib.OPS.paintFormXObject){
+              const m=ctmStack[ctmStack.length-1];
+              const w=Math.abs(m[0])||Math.abs(m[2]);
+              const h=Math.abs(m[3])||Math.abs(m[1]);
+              const x=m[4], y=pageH1-m[5]-h;
+              if(w>=MIN_W&&h>=MIN_H)
+                allCandidates.push({page:p,x,y,w,h,pageH:pageH1,pageW:pageW1,imgName:null,isForm:true});
+            }
+          }
+        }catch(e){console.warn('Scan error page',p,e);}
+      }
+
+      // ── FILTER: keep only content-area, non-repeated images ──────────────
+      const sizeHist={};
+      allCandidates.forEach(c=>{
+        const k=Math.round(c.w)+'_'+Math.round(c.h);
+        sizeHist[k]=(sizeHist[k]||0)+1;
+      });
+
+      const contentCandidates = allCandidates.filter(c=>{
+        const k=Math.round(c.w)+'_'+Math.round(c.h);
+        if(sizeHist[k]>=REPEAT_THRESH) return false;         // repeated on 3+ pages = logo/header
+        if(c.y < HEADER_PT) return false;                   // in header zone
+        if(c.y+c.h > c.pageH-FOOTER_PT) return false;       // in footer zone
+        if(c.w > c.pageW*0.92 && c.h < 25) return false;    // full-width thin decorative rule
+        if(c.isForm && c.w > c.pageW*0.9 && c.h > c.pageH*0.8) return false; // full-page background
+        return true;
+      });
+
+      // ── PASS 2: render pages and crop ────────────────────────────────────
+      const pagesToRender = [...new Set(contentCandidates.map(c=>c.page))];
+      const pageCanvases = {};
+
+      for(let pi=0; pi<pagesToRender.length; pi++){
+        const p = pagesToRender[pi];
+        onProgress('Extracting page '+p+'…', 65+Math.round(30*pi/pagesToRender.length), 'Cropping images');
+        await tick();
+        try{
+          const page = await doc.getPage(p);
+          const vp = page.getViewport({scale:SCALE});
+          const canvas = document.createElement('canvas');
+          canvas.width=Math.round(vp.width); canvas.height=Math.round(vp.height);
+          await page.render({canvasContext:canvas.getContext('2d'),viewport:vp}).promise;
+          pageCanvases[p] = {canvas, page};
+        }catch(e){console.warn('Render error page',p,e);}
+      }
+
+      // Crop each content candidate
+      for(const c of contentCandidates){
+        const pc = pageCanvases[c.page];
+        if(!pc) continue;
+        const {canvas, page} = pc;
+
+        let dataURL = null;
+
+        // Try raw pixel data first for raster images (better quality, no JPEG re-compression)
+        if(!c.isForm && c.imgName){
+          try{
             let imgData=null;
-            try{imgData=page.objs.get(name);}catch(e){}
-            if(!imgData){try{imgData=page.commonObjs.get(name);}catch(e){}}
+            try{imgData=page.objs.get(c.imgName);}catch(e){}
+            if(!imgData){try{imgData=page.commonObjs.get(c.imgName);}catch(e){}}
             if(imgData&&imgData.data&&imgData.width>=30&&imgData.height>=30){
               const ic=document.createElement('canvas');
               ic.width=imgData.width; ic.height=imgData.height;
@@ -5011,51 +5087,29 @@ async function extractPDFContent(doc, fromPage, toPage, h1T, h2T, doImages, doMe
               ictx.putImageData(idata,0,0);
               dataURL=ic.toDataURL('image/jpeg',0.93);
             }
-            if(!dataURL){
-              const cx=Math.max(0,Math.round(x*SCALE)-2);
-              const cy=Math.max(0,Math.round(y*SCALE)-2);
-              const cw=Math.min(offCanvas.width-cx,Math.round(w*SCALE)+4);
-              const ch=Math.min(offCanvas.height-cy,Math.round(h*SCALE)+4);
-              if(cw>=20&&ch>=20){
-                const crop=document.createElement('canvas');
-                crop.width=cw; crop.height=ch;
-                crop.getContext('2d').drawImage(offCanvas,cx,cy,cw,ch,0,0,cw,ch);
-                dataURL=crop.toDataURL('image/jpeg',0.93);
-              }
-            }
-            if(dataURL) pageRegions.push({x,y,w,h,dataURL});
-          } else if(fn===pdfjsLib.OPS.paintFormXObject){
-            const m=ctmStack[ctmStack.length-1];
-            const w=Math.abs(m[0])||Math.abs(m[2]);
-            const h=Math.abs(m[3])||Math.abs(m[1]);
-            const x=m[4],y=pageH1-m[5]-h;
-            if(w<30||h<30) continue;
-            const key='form_'+Math.round(w)+'_'+Math.round(h)+'_'+p+'_'+Math.round(x)+'_'+Math.round(y);
-            if(seenImages.has(key)) continue;
-            seenImages.add(key);
-            const cx=Math.max(0,Math.round(x*SCALE)-2);
-            const cy=Math.max(0,Math.round(y*SCALE)-2);
-            const cw=Math.min(offCanvas.width-cx,Math.round(w*SCALE)+4);
-            const ch=Math.min(offCanvas.height-cy,Math.round(h*SCALE)+4);
-            if(cw>=20&&ch>=20){
-              const crop=document.createElement('canvas');
-              crop.width=cw; crop.height=ch;
-              crop.getContext('2d').drawImage(offCanvas,cx,cy,cw,ch,0,0,cw,ch);
-              pageRegions.push({x,y,w,h,dataURL:crop.toDataURL('image/jpeg',0.93)});
-            }
-          }
+          }catch(e){}
         }
 
-        // Sort top-to-bottom and store
-        pageRegions.sort((a,b)=>a.y-b.y);
-        for(const r of pageRegions){
-          const fname='img_p'+p+'_'+(++imgCounter)+'.jpg';
-          images.push({fname,b64:r.dataURL.split(',')[1],width:Math.round(r.w),height:Math.round(r.h),page:p,y:r.y});
-          blocks.push({tag:'img',fname,page:p,y:r.y});
+        // Crop from rendered canvas (covers Form XObjects / vector content)
+        if(!dataURL){
+          const cx=Math.max(0,Math.round(c.x*SCALE)-3);
+          const cy=Math.max(0,Math.round(c.y*SCALE)-3);
+          const cw=Math.min(canvas.width-cx,Math.round(c.w*SCALE)+6);
+          const ch=Math.min(canvas.height-cy,Math.round(c.h*SCALE)+6);
+          if(cw<20||ch<20) continue;
+          const crop=document.createElement('canvas');
+          crop.width=cw; crop.height=ch;
+          crop.getContext('2d').drawImage(canvas,cx,cy,cw,ch,0,0,cw,ch);
+          dataURL=crop.toDataURL('image/jpeg',0.93);
         }
-      }catch(e){console.warn('Image extract error page',p,e);}
+
+        if(!dataURL) continue;
+        const fname='img_p'+c.page+'_'+(++imgCounter)+'.jpg';
+        const b64=dataURL.split(',')[1];
+        images.push({fname,b64,width:Math.round(c.w),height:Math.round(c.h),page:c.page,y:c.y});
+        blocks.push({tag:'img',fname,page:c.page,y:c.y});
+      }
     }
-  }
 
   // Sort blocks by page then Y so images appear in correct reading order
   blocks.sort((a,b)=> a.page!==b.page ? a.page-b.page : ((a.y||0)-(b.y||0)));
