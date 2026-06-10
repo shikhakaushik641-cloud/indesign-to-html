@@ -2710,11 +2710,6 @@ function normStyle(raw) {
   }
   return s.trim();
 }
-function esc(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}
-function tick() { return new Promise(r=>setTimeout(r,0)); }
 
 // ── Style resolution ─────────────────────────────────────────
 function extractProps(s) {
