@@ -997,8 +997,13 @@ async function extractImagesFromPDF(pdfBuf, meta){
   if(!pdfBuf) return;
 
   // Build full ordered list of target filenames (story-anchored + spread-level)
-  const targetFiles = (meta.storyImageFiles || []).filter(f => !imageFiles[f]);
-  if(!targetFiles.length) return;
+  // Fall back to all linkedImageFiles if no frames were detected via collectFrames
+  let targetFiles = (meta.storyImageFiles || []).filter(f => !imageFiles[f]);
+  if(!targetFiles.length){
+    targetFiles = (meta.linkedImageFiles || []).filter(f => !imageFiles[f]);
+  }
+  // Always try to extract if PDF provided, even without a target list
+  const extractAll = !targetFiles.length;
 
   try{
     const pdfDoc = await pdfjsLib.getDocument({data: new Uint8Array(pdfBuf)}).promise;
@@ -1061,13 +1066,26 @@ async function extractImagesFromPDF(pdfBuf, meta){
 
     if(!allExtracted.length) return;
 
-    // Step 2: match extracted images to target filenames.
-    // Strategy: aspect-ratio matching. Each extracted image used at most once.
-    // Build aspect map from imageFrames (spread-level coords, if any)
+    if(extractAll){
+      // No target filenames known — store extracted images with synthetic keys
+      // so blocksToHTML can pick them up via the _pdf_img_ fallback blocks
+      allExtracted.forEach((ex, idx) => {
+        const key = `_pdf_img_${idx}.jpg`;
+        if(!imageFiles[key]) imageFiles[key] = ex.dataURL;
+      });
+      renderImgList();
+      return;
+    }
+
+    // Step 2: match extracted images to target filenames by aspect ratio.
     const aspectMap = {};
     (meta.imageFrames||[]).forEach(f => {
       if(f.filename && f.widthPt && f.heightPt)
         aspectMap[f.filename] = f.widthPt / f.heightPt;
+    });
+    // Also use storyImageFiles frame dimensions if available
+    (meta.storyImageFiles||[]).forEach((fname, idx) => {
+      // No dimension info — order-based fallback will be used
     });
 
     const usedExtr = new Set();
@@ -1077,10 +1095,9 @@ async function extractImagesFromPDF(pdfBuf, meta){
       let bestIdx = -1, bestScore = Infinity;
       allExtracted.forEach((ex, idx) => {
         if(usedExtr.has(idx)) return;
-        // Score: aspect ratio diff if known, else pick by document order (idx)
         const score = targetAspect != null
           ? Math.abs(ex.width / ex.height - targetAspect)
-          : idx * 0.001; // order-based tiebreaker
+          : idx * 0.001;
         if(score < bestScore){ bestScore = score; bestIdx = idx; }
       });
       if(bestIdx >= 0){
@@ -1219,7 +1236,7 @@ async function runIDMLConvert(){
     let {zip,meta,matched,unmatched,htmlString}=await buildIDMLZip(parsed,title);
 
     // Auto-extract images from PDF if user supplied one
-    if(state.idmlPdfBuf && meta && (meta.storyImageFiles?.length || meta.imageFrames?.length)){
+    if(state.idmlPdfBuf && meta){
       s2Progress('Extracting images from PDF…',80,'Rendering pages');await tick();
       const beforeCount=Object.keys(imageFiles).length;
       await extractImagesFromPDF(state.idmlPdfBuf, meta);
@@ -3404,6 +3421,24 @@ function getOrderedBlocks(parsed) {
 
   // Append any stories not reached via spread frames
   parsed.stories.forEach(s=>{if(!visitedStories.has(s.id))allBlocks.push(...s.blocks);});
+
+  // Fallback: add _image_ blocks for any linked images not captured via spread frames or stories.
+  // This ensures step-2 uploads and PDF-extracted images appear even when collectFrames misses frames.
+  const capturedImages = new Set(allBlocks.filter(b=>b.styleName==='_image_').map(b=>b.imageFile));
+  (parsed.linkedImageFiles||[]).forEach(fname=>{
+    if(fname && !capturedImages.has(fname)){
+      allBlocks.push({styleName:'_image_', imageFile:fname, spans:[]});
+      capturedImages.add(fname);
+    }
+  });
+  // Also expose any _pdf_img_ synthetic images extracted when no target filenames were known
+  Object.keys(imageFiles).filter(k=>k.startsWith('_pdf_img_')).forEach(k=>{
+    if(!capturedImages.has(k)){
+      allBlocks.push({styleName:'_image_', imageFile:k, spans:[]});
+      capturedImages.add(k);
+    }
+  });
+
   return allBlocks;
 }
 
