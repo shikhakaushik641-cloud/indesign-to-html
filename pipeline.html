@@ -2086,7 +2086,7 @@ class IDMLXMLParser {
       'Story','ParagraphStyleRange','CharacterStyleRange',
       'Spread','Page','TextFrame','Image','Link',
       'ParagraphStyle','CharacterStyle','ParagraphStyleGroup','CharacterStyleGroup',
-      'Rectangle','Oval','Group','Table','Row','Cell','Column',
+      'Rectangle','Oval','Group','Table','Row','Cell','Column','EPS','PDF','Image','Link',
     ]);
   }
   parse(xml) {
@@ -3420,11 +3420,19 @@ function collectFrames(node,frames) {
       if(type==='TextFrame'&&item['@_Self'])
         frames.push({id:item['@_Self'],storyRef:item['@_ParentStory'],next:item['@_NextTextFrame'],prev:item['@_PreviousTextFrame'],bounds:item['@_GeometricBounds']||'',transform:item['@_ItemTransform']||''});
       if((type==='Rectangle'||type==='Oval'||type==='Polygon')&&item['@_Self']) {
-        // Link lives at Rectangle > Image > Link (not directly on Rectangle)
+        // Link may be at: Rectangle>Link, Rectangle>Image>Link, Rectangle>EPS>Link, Rectangle>PDF>Link
         let lnk = item['Link'];
         if(!lnk && item['Image']){
           const img = Array.isArray(item['Image']) ? item['Image'][0] : item['Image'];
           lnk = img && img['Link'];
+        }
+        if(!lnk && item['EPS']){
+          const eps = Array.isArray(item['EPS']) ? item['EPS'][0] : item['EPS'];
+          lnk = eps && eps['Link'];
+        }
+        if(!lnk && item['PDF']){
+          const pdf = Array.isArray(item['PDF']) ? item['PDF'][0] : item['PDF'];
+          lnk = pdf && pdf['Link'];
         }
         const linkId = lnk ? (Array.isArray(lnk)?lnk[0]:lnk)['@_Self'] : null;
         const linkUri = lnk ? ((Array.isArray(lnk)?lnk[0]:lnk)['@_LinkResourceURI']||'') : '';
@@ -3530,7 +3538,12 @@ function getOrderedBlocks(parsed) {
       if(f.next&&fm[f.next]) blocks.push(...walkChain_collect(fm[f.next],visitedStories,sm));
       const yTop=parseIDMLY(f.bounds);
       const fw=(()=>{ if(!f.bounds) return 0; const p=String(f.bounds).trim().split(/\s+/).map(Number); return p.length>=4?Math.abs(p[3]-p[1]):0; })();
-      const isDecorative = pageW>50 && fw<pageW*0.25 && !f.next && blocks.length<=8;
+      // A frame is decorative if it's narrow (< 25% page width) OR contains only short numeric/symbol text
+      const allText = blocks.map(b=>(b.spans||[]).map(s=>s.text||'').join('')).join('').trim();
+      const isShortNumeric = allText.length <= 20 && /^[\d%.,\s]+$/.test(allText);
+      const isDecorative = !f.next && blocks.length<=8 && (
+        (pageW>50 && fw<pageW*0.25) || isShortNumeric
+      );
       textChains.push({yTop,blocks,isDecorative});
     });
 
