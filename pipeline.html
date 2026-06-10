@@ -3113,6 +3113,11 @@ async function parseIDML(buffer) {
   });
 
   // Back-fill spread.frames with raw geometry where bounds are missing
+  // AND add any image frames detected by rawFrameGeo that collectFrames missed
+  // (e.g. EPS/PDF-linked images use <PDF>/<EPS> elements instead of <Image>)
+  const existingFrameIds = new Set();
+  res.spreads.forEach(sp => existingFrameIds.add(sp.id) || sp.frames.forEach(f => existingFrameIds.add(f.id)));
+
   res.spreads.forEach(sp => {
     sp.frames.forEach(f => {
       const raw = res.rawFrameGeo[f.id];
@@ -3122,6 +3127,21 @@ async function parseIDML(buffer) {
         if (!f.storyRef && raw.storyRef) f.storyRef = raw.storyRef;
         if (raw.isBox)    f.isBox     = true;
         if (raw.fillColor) f.fillColor = raw.fillColor;
+        if (!f.filename && raw.filename) f.filename = raw.filename;
+        if (!f.type || f.type === 'text') {
+          if (raw.filename) f.type = 'image';
+        }
+      }
+    });
+
+    // Add image frames that rawFrameGeo found but collectFrames missed
+    Object.entries(res.rawFrameGeo).forEach(([fid, raw]) => {
+      if (raw.spreadId !== sp.id) return;
+      if (existingFrameIds.has(fid)) return;
+      if (raw.type === 'image' && raw.filename) {
+        sp.frames.push({ id: fid, type: 'image', filename: raw.filename,
+                         bounds: raw.bounds, transform: raw.transform || '' });
+        existingFrameIds.add(fid);
       }
     });
   });
@@ -3309,6 +3329,11 @@ function parsePR(pr) {
       flushBlock();
       curSpans.push(span);
       flushBlock();
+      return;
+    }
+    if(span.props?._isTable){
+      flushBlock();
+      allBlocks.push({styleName:'_table_', tableHTML: parseIDMLTable(span.props._tbl), spans:[]});
       return;
     }
     const parts=span.text.split('\u0003');
