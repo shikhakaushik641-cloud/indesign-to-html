@@ -4971,9 +4971,10 @@ async function extractPDFContent(doc, fromPage, toPage, h1T, h2T, doImages, doMe
         blocks.push({tag, cls, text, fontSize, page:p, y:yPos});
       }
     }
+  }
 
-    // -- Image extraction: 2-pass approach --
-    // Pass 1 (all pages): collect positions without rendering.
+  // -- Image extraction: 2-pass approach --
+  // Pass 1 (all pages): collect positions without rendering.
     // Filter out header/footer/repeated elements.
     // Pass 2: render only pages with content images and crop.
     if(doImages){
