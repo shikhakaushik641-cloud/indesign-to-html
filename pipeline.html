@@ -996,70 +996,92 @@ function clearIDMLPdf(){
 async function extractImagesFromPDF(pdfBuf, meta){
   if(!pdfBuf) return;
 
-  // Build full ordered list of target filenames (story-anchored + spread-level)
-  // Fall back to all linkedImageFiles if no frames were detected via collectFrames
   let targetFiles = (meta.storyImageFiles || []).filter(f => !imageFiles[f]);
-  if(!targetFiles.length){
-    targetFiles = (meta.linkedImageFiles || []).filter(f => !imageFiles[f]);
-  }
-  // Always try to extract if PDF provided, even without a target list
+  if(!targetFiles.length) targetFiles = (meta.linkedImageFiles || []).filter(f => !imageFiles[f]);
   const extractAll = !targetFiles.length;
+
+  // Helper: multiply two 6-element CTM matrices [a,b,c,d,e,f]
+  const mulM=(a,b)=>[
+    a[0]*b[0]+a[2]*b[1], a[1]*b[0]+a[3]*b[1],
+    a[0]*b[2]+a[2]*b[3], a[1]*b[2]+a[3]*b[3],
+    a[0]*b[4]+a[2]*b[5]+a[4], a[1]*b[4]+a[3]*b[5]+a[5]
+  ];
 
   try{
     const pdfDoc = await pdfjsLib.getDocument({data: new Uint8Array(pdfBuf)}).promise;
 
-    // Step 1: extract ALL image XObjects from every page, in document order
-    const allExtracted = []; // [{dataURL, width, height}]
+    // Step 1: For each page, collect image XObjects with position (in page points, top-left origin)
+    // allExtracted: [{dataURL, pgNum, x, y, w, h, aspect, imgName}]
+    const allExtracted = [];
 
     for(let pgNum = 1; pgNum <= pdfDoc.numPages; pgNum++){
       const page = await pdfDoc.getPage(pgNum);
-      const opList = await page.getOperatorList();
+      const vp = page.getViewport({scale:1.5});
+      const pageH = page.getViewport({scale:1}).height; // raw page height in points
 
-      // Collect unique image XObject names in paint order
-      const imgNames = [];
-      const seen = new Set();
-      for(let i = 0; i < opList.fnArray.length; i++){
-        const fn = opList.fnArray[i];
-        if(fn === pdfjsLib.OPS.paintImageXObject ||
-           fn === pdfjsLib.OPS.paintImageXObjectRepeat ||
-           fn === pdfjsLib.OPS.paintInlineImageXObject){
-          const name = opList.argsArray[i][0];
-          if(name && !seen.has(name)){ seen.add(name); imgNames.push(name); }
-        }
-      }
-      if(!imgNames.length) continue;
-
-      // Render page to force PDF.js to load image data into page.objs
-      const vp = page.getViewport({scale: 1.5});
+      // Render to canvas first (forces image data into page.objs)
       const off = document.createElement('canvas');
       off.width = vp.width; off.height = vp.height;
-      await page.render({canvasContext: off.getContext('2d'), viewport: vp}).promise;
+      await page.render({canvasContext:off.getContext('2d'), viewport:vp}).promise;
 
-      for(const name of imgNames){
-        let imgData = null;
-        try{ imgData = page.objs.get(name); }catch(e){}
-        if(!imgData){ try{ imgData = page.commonObjs.get(name); }catch(e){} }
-        if(!imgData || !imgData.data || !imgData.width || !imgData.height) continue;
-        // Skip tiny decorative images (bullets, icons, background patterns)
-        if(imgData.width < 60 || imgData.height < 60) continue;
+      const opList = await page.getOperatorList();
 
-        const ic = document.createElement('canvas');
-        ic.width = imgData.width; ic.height = imgData.height;
-        const ictx = ic.getContext('2d');
-        const idata = ictx.createImageData(imgData.width, imgData.height);
-        const src = imgData.data, dst = idata.data;
-        if(src.length === imgData.width * imgData.height * 4){
+      // Track CTM stack to get each image's position
+      const ctmStack = [[1,0,0,1,0,0]];
+      const pageImgPositions = []; // {imgName, x, y, w, h} — PDF top-left coords, in points
+
+      for(let i=0; i<opList.fnArray.length; i++){
+        const fn = opList.fnArray[i];
+        const args = opList.argsArray[i];
+        if(fn === pdfjsLib.OPS.save){
+          ctmStack.push([...ctmStack[ctmStack.length-1]]);
+        } else if(fn === pdfjsLib.OPS.restore){
+          if(ctmStack.length>1) ctmStack.pop();
+        } else if(fn === pdfjsLib.OPS.transform){
+          ctmStack[ctmStack.length-1] = mulM(ctmStack[ctmStack.length-1], args);
+        } else if(fn===pdfjsLib.OPS.paintImageXObject||fn===pdfjsLib.OPS.paintImageXObjectRepeat||fn===pdfjsLib.OPS.paintInlineImageXObject){
+          const imgName = args[0];
+          const m = ctmStack[ctmStack.length-1]; // [a,b,c,d,e,f]
+          // Image is drawn over unit square; transform maps it to page coords (PDF bottom-left)
+          const imgW = Math.abs(m[0]) || Math.abs(m[2]);
+          const imgH = Math.abs(m[3]) || Math.abs(m[1]);
+          const pdfX = m[4];
+          const pdfY = m[5]; // bottom-left Y in PDF coords
+          // Convert to top-left origin (HTML-style)
+          const x = pdfX;
+          const y = pageH - pdfY - imgH;
+          if(imgName) pageImgPositions.push({imgName, x, y, w:imgW, h:imgH});
+        }
+      }
+
+      // Extract image data
+      const seen = new Set();
+      for(const {imgName, x, y, w, h} of pageImgPositions){
+        if(seen.has(imgName)) continue;
+        seen.add(imgName);
+        if(w<20 || h<20) continue; // skip tiny icons
+
+        let imgData=null;
+        try{ imgData=page.objs.get(imgName); }catch(e){}
+        if(!imgData){ try{ imgData=page.commonObjs.get(imgName); }catch(e){} }
+        if(!imgData||!imgData.data||!imgData.width||!imgData.height) continue;
+
+        const ic=document.createElement('canvas');
+        ic.width=imgData.width; ic.height=imgData.height;
+        const ictx=ic.getContext('2d');
+        const idata=ictx.createImageData(imgData.width,imgData.height);
+        const src=imgData.data,dst=idata.data;
+        if(src.length===imgData.width*imgData.height*4){
           dst.set(src);
-        } else if(src.length === imgData.width * imgData.height * 3){
-          for(let p=0,q=0; p<src.length; p+=3,q+=4){
-            dst[q]=src[p]; dst[q+1]=src[p+1]; dst[q+2]=src[p+2]; dst[q+3]=255;
-          }
+        } else if(src.length===imgData.width*imgData.height*3){
+          for(let p=0,q=0;p<src.length;p+=3,q+=4){dst[q]=src[p];dst[q+1]=src[p+1];dst[q+2]=src[p+2];dst[q+3]=255;}
         } else continue;
-        ictx.putImageData(idata, 0, 0);
+        ictx.putImageData(idata,0,0);
         allExtracted.push({
-          dataURL: ic.toDataURL('image/jpeg', 0.92),
-          width: imgData.width,
-          height: imgData.height
+          dataURL: ic.toDataURL('image/jpeg',0.92),
+          pgNum, x, y, w, h,
+          aspect: w/h,
+          imgName
         });
       }
     }
@@ -1067,47 +1089,52 @@ async function extractImagesFromPDF(pdfBuf, meta){
     if(!allExtracted.length) return;
 
     if(extractAll){
-      // No target filenames known — store extracted images with synthetic keys
-      // so blocksToHTML can pick them up via the _pdf_img_ fallback blocks
-      allExtracted.forEach((ex, idx) => {
-        const key = `_pdf_img_${idx}.jpg`;
-        if(!imageFiles[key]) imageFiles[key] = ex.dataURL;
-      });
-      renderImgList();
-      return;
+      allExtracted.forEach((ex,idx)=>{ const k=`_pdf_img_${idx}.jpg`; if(!imageFiles[k]) imageFiles[k]=ex.dataURL; });
+      renderImgList(); return;
     }
 
-    // Step 2: match extracted images to target filenames by aspect ratio.
-    const aspectMap = {};
-    (meta.imageFrames||[]).forEach(f => {
-      if(f.filename && f.widthPt && f.heightPt)
-        aspectMap[f.filename] = f.widthPt / f.heightPt;
-    });
-    // Also use storyImageFiles frame dimensions if available
-    (meta.storyImageFiles||[]).forEach((fname, idx) => {
-      // No dimension info — order-based fallback will be used
-    });
-
+    // Step 2: Position-based matching — match each IDML image frame to the closest PDF image
+    // imgFrameMeta: [{filename, pageNum, x_pt, y_pt, widthPt, heightPt}]
+    const frameMeta = meta.imageFrames || [];
     const usedExtr = new Set();
-    for(const fname of targetFiles){
-      if(imageFiles[fname]) continue;
-      const targetAspect = aspectMap[fname] || null;
-      let bestIdx = -1, bestScore = Infinity;
-      allExtracted.forEach((ex, idx) => {
-        if(usedExtr.has(idx)) return;
-        const score = targetAspect != null
-          ? Math.abs(ex.width / ex.height - targetAspect)
-          : idx * 0.001;
-        if(score < bestScore){ bestScore = score; bestIdx = idx; }
+
+    // First pass: exact position match (same page, center within threshold)
+    for(const fm of frameMeta){
+      if(imageFiles[fm.filename]) continue;
+      const cx_fm = (fm.x_pt||0) + (fm.widthPt||0)/2;
+      const cy_fm = (fm.y_pt||0) + (fm.heightPt||0)/2;
+      let bestIdx=-1, bestDist=Infinity;
+      allExtracted.forEach((ex,i)=>{
+        if(usedExtr.has(i)) return;
+        if(ex.pgNum !== fm.page_num) return;
+        const cx_ex = ex.x + ex.w/2;
+        const cy_ex = ex.y + ex.h/2;
+        const dist = Math.sqrt((cx_fm-cx_ex)**2 + (cy_fm-cy_ex)**2);
+        if(dist<bestDist){ bestDist=dist; bestIdx=i; }
       });
-      if(bestIdx >= 0){
-        imageFiles[fname] = allExtracted[bestIdx].dataURL;
+      // Accept if center is within 60pts (generous threshold for coordinate rounding)
+      if(bestIdx>=0 && bestDist<60){
+        imageFiles[fm.filename]=allExtracted[bestIdx].dataURL;
         usedExtr.add(bestIdx);
       }
     }
 
+    // Second pass: aspect-ratio fallback for unmatched frames
+    for(const fname of targetFiles){
+      if(imageFiles[fname]) continue;
+      const fm = frameMeta.find(f=>f.filename===fname);
+      const targetAspect = fm && fm.widthPt && fm.heightPt ? fm.widthPt/fm.heightPt : null;
+      let bestIdx=-1, bestScore=Infinity;
+      allExtracted.forEach((ex,i)=>{
+        if(usedExtr.has(i)) return;
+        const score = targetAspect!=null ? Math.abs(ex.aspect-targetAspect) : i*0.001;
+        if(score<bestScore){ bestScore=score; bestIdx=i; }
+      });
+      if(bestIdx>=0){ imageFiles[fname]=allExtracted[bestIdx].dataURL; usedExtr.add(bestIdx); }
+    }
+
     renderImgList();
-  }catch(e){ console.warn('PDF image extraction failed:', e); }
+  }catch(e){ console.warn('PDF image extraction failed:',e); }
 }
 
 // IDML image upload
