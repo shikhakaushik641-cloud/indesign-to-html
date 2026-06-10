@@ -3191,29 +3191,54 @@ function parseCellContent(cell) {
 }
 
 function parseIDMLTable(tbl) {
-  const rows = tbl.Row ? (Array.isArray(tbl.Row) ? tbl.Row : [tbl.Row]) : [];
-  if (!rows.length) return '';
-  const headerRowCount = parseInt(tbl['@_HeaderRowCount'] || 0);
+  if (!tbl) return '';
+  // In IDML, cells are FLAT direct children of Table (NOT nested in Row).
+  // Each cell has Name="rowIdx:colIdx". Row elements carry row metadata only.
+  const allCells = tbl.Cell ? (Array.isArray(tbl.Cell) ? tbl.Cell : [tbl.Cell]) : [];
+  if (!allCells.length) return '';
 
-  let thead = '', tbody = '';
-  rows.forEach((row, ri) => {
-    const cells = row.Cell ? (Array.isArray(row.Cell) ? row.Cell : [row.Cell]) : [];
-    const tag = ri < headerRowCount ? 'th' : 'td';
-    let rowHTML = '  <tr>\n';
-    cells.forEach(cell => {
-      const cs = parseInt(cell['@_ColumnSpan'] || 1);
-      const rs = parseInt(cell['@_RowSpan'] || 1);
-      const skipAttr = cell['@_RowSpan'] === '0' || cell['@_ColumnSpan'] === '0';
-      if (skipAttr) return; // merged cell continuation — skip
-      const attrs = [cs > 1 ? `colspan="${cs}"` : '', rs > 1 ? `rowspan="${rs}"` : ''].filter(Boolean).join(' ');
-      rowHTML += `    <${tag}${attrs ? ' ' + attrs : ''}>${parseCellContent(cell)}</${tag}>\n`;
-    });
-    rowHTML += '  </tr>\n';
-    if (ri < headerRowCount) thead += rowHTML;
-    else tbody += rowHTML;
+  const headerRowCount = parseInt(tbl['@_HeaderRowCount'] || 0);
+  const bodyRowCount   = parseInt(tbl['@_BodyRowCount']   || 0);
+  const colCount       = parseInt(tbl['@_ColumnCount']    || 1);
+  const totalRows      = headerRowCount + bodyRowCount || 1;
+
+  // Build cellMap keyed by "rowIdx:colIdx"
+  const cellMap = {};
+  allCells.forEach(cell => {
+    const name = (cell['@_Name'] || '').trim();
+    if (name) cellMap[name] = cell;
   });
 
-  return `<table class="idml-table">\n${thead ? `<thead>\n${thead}</thead>\n` : ''}<tbody>\n${tbody}</tbody>\n</table>`;
+  // Track positions occupied by spanning cells
+  const occupied = new Set();
+  let thead = '', tbody = '';
+
+  for (let ri = 0; ri < totalRows; ri++) {
+    const isHeader = ri < headerRowCount;
+    const tag = isHeader ? 'th' : 'td';
+    let rowHTML = '  <tr>\n';
+    let ci = 0;
+    while (ci < colCount) {
+      const key = ri + ':' + ci;
+      if (occupied.has(key)) { ci++; continue; }
+      const cell = cellMap[key];
+      if (!cell) { ci++; continue; }
+      const cs = parseInt(cell['@_ColumnSpan'] || 1);
+      const rs = parseInt(cell['@_RowSpan'] || 1);
+      if (rs === 0 || cs === 0) { ci++; continue; }
+      for (let dr = 0; dr < rs; dr++)
+        for (let dc = 0; dc < cs; dc++)
+          if (dr > 0 || dc > 0) occupied.add((ri+dr) + ':' + (ci+dc));
+      const attrs = [cs > 1 ? 'colspan="'+cs+'"' : '', rs > 1 ? 'rowspan="'+rs+'"' : ''].filter(Boolean).join(' ');
+      rowHTML += '    <' + tag + (attrs ? ' '+attrs : '') + '>' + parseCellContent(cell) + '</' + tag + '>\n';
+      ci += cs;
+    }
+    rowHTML += '  </tr>\n';
+    if (isHeader) thead += rowHTML; else tbody += rowHTML;
+  }
+
+  if (!tbody && !thead) return '';
+  return '<table class="idml-table">\n' + (thead ? '<thead>\n'+thead+'</thead>\n' : '') + '<tbody>\n' + tbody + '</tbody>\n</table>';
 }
 
 function parseStory(story) {
@@ -3242,7 +3267,7 @@ function parsePR(pr) {
   // Also check for Rectangle children directly in ParagraphStyleRange
   const prRects = extractImageRects(pr);
 
-  (Array.isArray(crs)?crs:[crs||[]]).forEach(cr=>{
+  (crs ? (Array.isArray(crs)?crs:[crs]) : []).forEach(cr=>{
     if(!cr||typeof cr!=='object') return;
     // Tables can also appear inside CharacterStyleRange
     const crTables = cr.Table ? (Array.isArray(cr.Table)?cr.Table:[cr.Table]) : [];
