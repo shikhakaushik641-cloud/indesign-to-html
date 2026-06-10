@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -2534,6 +2534,16 @@ sup,sub{font-size:.72em;line-height:0}
 .idml-diagram-fig svg{max-width:100%;height:auto;display:inline-block}
 .idml-diagram-caption{font-size:.82rem;color:#555;font-style:italic;text-align:center;display:block;margin-top:.3em}
 
+/* ── Tables ── */
+.idml-table-wrap{overflow-x:auto;margin:1.2em 0}
+.idml-table{border-collapse:collapse;width:100%;font-size:.9em;line-height:1.4}
+.idml-table th,.idml-table td{border:1px solid #bbb;padding:.45em .65em;vertical-align:top;text-align:left}
+.idml-table thead th{background:#1a3a5c;color:#fff;font-weight:700;text-align:center}
+.idml-table tbody tr:nth-child(even){background:#f5f8fc}
+.idml-table td p,.idml-table th p{margin:.1em 0}
+.idml-table img{max-width:100%;height:auto;display:block;margin:.3em auto}
+.img-placeholder{color:#888;font-size:.8em;font-style:italic;padding:.2em 0}
+
 /* ── Image placeholder ── */
 .img-placeholder{background:#f5f5f5;border:1.5px dashed #c0c0c0;border-radius:4px;padding:12px 8px;text-align:center;color:#999;font-size:.78em;font-family:sans-serif;min-height:60px;display:flex;align-items:center;justify-content:center;gap:6px}
 
@@ -3142,6 +3152,70 @@ function collectLinks(node, linkMap) {
   });
 }
 
+// ── IDML Table Parser ────────────────────────────────────────────────────────
+function parseCellContent(cell) {
+  const parts = [];
+  // Text from ParagraphStyleRange children inside this cell
+  const prs = cell.ParagraphStyleRange
+    ? (Array.isArray(cell.ParagraphStyleRange) ? cell.ParagraphStyleRange : [cell.ParagraphStyleRange])
+    : [];
+  prs.forEach(pr => {
+    const blocks = parsePR(pr);
+    blocks.forEach(b => {
+      if (b.styleName === '_image_') {
+        const imgSrc = findImage(b.imageFile) || '';
+        parts.push(imgSrc
+          ? `<img src="${imgSrc}" alt="${esc(b.imageFile)}" style="max-width:100%;height:auto;display:block;margin:.25em auto"/>`
+          : `<span class="img-placeholder">📷 ${esc(b.imageFile)}</span>`);
+      } else if (b.styleName === '_table_') {
+        parts.push(b.tableHTML || '');
+      } else {
+        const inner = spansToHTML(b.spans);
+        if (inner.trim()) {
+          const m = mapPS(b.styleName);
+          parts.push(`<p class="${m.cls||'idml-body'}" style="margin:.1em 0">${inner}</p>`);
+        }
+      }
+    });
+  });
+  // Also check for images directly placed in the cell (outside a ParagraphStyleRange)
+  extractImageRects(cell).forEach(fname => {
+    const imgSrc = findImage(fname) || '';
+    if (!parts.some(p => p.includes(fname))) {
+      parts.push(imgSrc
+        ? `<img src="${imgSrc}" alt="${esc(fname)}" style="max-width:100%;height:auto;display:block;margin:.25em auto"/>`
+        : `<span class="img-placeholder">📷 ${esc(fname)}</span>`);
+    }
+  });
+  return parts.join('') || '&nbsp;';
+}
+
+function parseIDMLTable(tbl) {
+  const rows = tbl.Row ? (Array.isArray(tbl.Row) ? tbl.Row : [tbl.Row]) : [];
+  if (!rows.length) return '';
+  const headerRowCount = parseInt(tbl['@_HeaderRowCount'] || 0);
+
+  let thead = '', tbody = '';
+  rows.forEach((row, ri) => {
+    const cells = row.Cell ? (Array.isArray(row.Cell) ? row.Cell : [row.Cell]) : [];
+    const tag = ri < headerRowCount ? 'th' : 'td';
+    let rowHTML = '  <tr>\n';
+    cells.forEach(cell => {
+      const cs = parseInt(cell['@_ColumnSpan'] || 1);
+      const rs = parseInt(cell['@_RowSpan'] || 1);
+      const skipAttr = cell['@_RowSpan'] === '0' || cell['@_ColumnSpan'] === '0';
+      if (skipAttr) return; // merged cell continuation — skip
+      const attrs = [cs > 1 ? `colspan="${cs}"` : '', rs > 1 ? `rowspan="${rs}"` : ''].filter(Boolean).join(' ');
+      rowHTML += `    <${tag}${attrs ? ' ' + attrs : ''}>${parseCellContent(cell)}</${tag}>\n`;
+    });
+    rowHTML += '  </tr>\n';
+    if (ri < headerRowCount) thead += rowHTML;
+    else tbody += rowHTML;
+  });
+
+  return `<table class="idml-table">\n${thead ? `<thead>\n${thead}</thead>\n` : ''}<tbody>\n${tbody}</tbody>\n</table>`;
+}
+
 function parseStory(story) {
   const blocks=[];
   const prs=story.ParagraphStyleRange;
@@ -3157,15 +3231,24 @@ function parseStory(story) {
 
 function parsePR(pr) {
   const styleName=normStyle(pr['@_AppliedParagraphStyle']||'');
+
+  // Tables can appear directly inside ParagraphStyleRange (most common in IDML)
+  const directTables = pr.Table ? (Array.isArray(pr.Table)?pr.Table:[pr.Table]) : [];
+
   const crs=pr.CharacterStyleRange;
-  if(!crs) return [];
+  if(!crs && !directTables.length) return [];
 
   const rawSpans=[];
   // Also check for Rectangle children directly in ParagraphStyleRange
-  // (some IDML versions place them there instead of inside CharacterStyleRange)
   const prRects = extractImageRects(pr);
 
-  (Array.isArray(crs)?crs:[crs]).forEach(cr=>{
+  (Array.isArray(crs)?crs:[crs||[]]).forEach(cr=>{
+    if(!cr||typeof cr!=='object') return;
+    // Tables can also appear inside CharacterStyleRange
+    const crTables = cr.Table ? (Array.isArray(cr.Table)?cr.Table:[cr.Table]) : [];
+    crTables.forEach(tbl=>{
+      rawSpans.push({styleName:'_table_', text:'\uE005TABLE\uE006', props:{_isTable:true, _tbl:tbl}});
+    });
     // Check if this CharacterStyleRange contains an image Rectangle
     const imgRects = extractImageRects(cr);
     if(imgRects.length){
@@ -3210,6 +3293,11 @@ function parsePR(pr) {
     });
   });
   flushBlock();
+
+  // Tables placed directly in ParagraphStyleRange
+  directTables.forEach(tbl=>{
+    allBlocks.push({styleName:'_table_', tableHTML: parseIDMLTable(tbl), spans:[]});
+  });
 
   return allBlocks;
 }
@@ -3608,6 +3696,13 @@ function blocksToHTML(blocks) {
     if(b.styleName==='_diagram_'){
       flush();
       nodes.push(`<figure class="idml-diagram-fig">\n${b.svg}\n</figure>`);
+      continue;
+    }
+
+    // ── Table block (parsed from InDesign Table element) ────────────────────
+    if(b.styleName==='_table_'){
+      flush();
+      nodes.push(`<div class="idml-table-wrap">\n${b.tableHTML||''}\n</div>`);
       continue;
     }
 
