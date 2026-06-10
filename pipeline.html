@@ -3538,11 +3538,11 @@ function getOrderedBlocks(parsed) {
       if(f.next&&fm[f.next]) blocks.push(...walkChain_collect(fm[f.next],visitedStories,sm));
       const yTop=parseIDMLY(f.bounds);
       const fw=(()=>{ if(!f.bounds) return 0; const p=String(f.bounds).trim().split(/\s+/).map(Number); return p.length>=4?Math.abs(p[3]-p[1]):0; })();
-      // A frame is decorative if it's narrow (< 25% page width) OR contains only short numeric/symbol text
+      // A frame is decorative if narrow (< 25% page width) OR short label-only text
       const allText = blocks.map(b=>(b.spans||[]).map(s=>s.text||'').join('')).join('').trim();
-      const isShortNumeric = allText.length <= 20 && /^[\d%.,\s]+$/.test(allText);
-      const isDecorative = !f.next && blocks.length<=8 && (
-        (pageW>50 && fw<pageW*0.25) || isShortNumeric
+      const isShortLabel = allText.length <= 30 && /^[\d%.,\s*]+$/.test(allText);
+      const isDecorative = !f.next && blocks.length<=6 && (
+        (pageW>50 && fw<pageW*0.25) || isShortLabel
       );
       textChains.push({yTop,blocks,isDecorative});
     });
