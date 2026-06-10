@@ -402,6 +402,14 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;cursor:po
         <div><div class="fc-name" id="idml-pdf-fname"></div><div class="fc-meta" id="idml-pdf-fmeta"></div></div>
         <button class="fc-remove" onclick="clearIDMLPdf()">✕</button>
       </div>
+      <div style="display:flex;gap:1rem;align-items:center;margin-top:.75rem;margin-bottom:.4rem;flex-wrap:wrap">
+        <button class="btn" id="btn-extract-images" onclick="runManualExtract()" style="font-size:.78rem;padding:.4rem .9rem;display:none">&#x26A1; Extract Images from PDF</button>
+        <span id="extract-progress-label" style="font-size:.75rem;color:var(--muted)"></span>
+      </div>
+      <div id="img-library-panel" style="display:none;margin-top:.4rem;border:1px solid var(--border);border-radius:8px;padding:.6rem;background:var(--bg2)">
+        <div style="font-size:.75rem;color:var(--muted);margin-bottom:.4rem">Extracted image library (<span id="img-library-count">0</span> images)</div>
+        <div id="img-library-grid" style="display:flex;flex-wrap:wrap;gap:.4rem;max-height:160px;overflow-y:auto"></div>
+      </div>
       <div style="display:flex;gap:1.5rem;align-items:center;margin-top:.75rem;margin-bottom:.5rem;font-size:.8rem">
         <label style="display:flex;align-items:center;gap:.4rem">
           <input type="checkbox" id="chk-page-layout"/>
@@ -986,24 +994,85 @@ async function setIDMLPdf(f){
   $('idml-pdf-fmeta').textContent=fmtBytes(f.size);
   $('idml-pdf-card').style.display='flex';
   idmlPdfDz.style.display='none';
+  const eb=$('btn-extract-images'); if(eb) eb.style.display='';
 }
 function clearIDMLPdf(){
   state.idmlPdfFile=null;
   state.idmlPdfBuf=null;
   $('idml-pdf-card').style.display='none';
   idmlPdfDz.style.display='';
+  const eb=$('btn-extract-images'); if(eb) eb.style.display='none';
+  const lbl=$('extract-progress-label'); if(lbl) lbl.textContent='';
+}
+
+// Show thumbnails of all extracted/uploaded images in the library panel
+function renderImgLibrary(){
+  const grid = $('img-library-grid');
+  const count = $('img-library-count');
+  if(!grid) return;
+  const entries = Object.entries(imageFiles).filter(([k,v])=>v&&v.startsWith('data:'));
+  count.textContent = entries.length;
+  if(!entries.length){ $('img-library-panel').style.display='none'; return; }
+  $('img-library-panel').style.display='';
+  grid.innerHTML = entries.map(([k,v])=>
+    `<div title="${k}" style="flex:0 0 auto"><img src="${v}" style="height:60px;width:auto;max-width:90px;object-fit:contain;border:1px solid var(--border);border-radius:4px;background:#fff" loading="lazy"/></div>`
+  ).join('');
+}
+
+// Standalone "Extract Images from PDF" triggered by button in Step 3
+async function runManualExtract(){
+  const btn = $('btn-extract-images');
+  const lbl = $('extract-progress-label');
+  if(!state.idmlPdfBuf){ lbl.textContent='Upload a PDF first'; return; }
+  if(!window._parsedIDML){ lbl.textContent='Convert IDML first (or wait for auto-extract on Convert)'; return; }
+  btn.disabled = true;
+  lbl.textContent = 'Starting extraction…';
+  try{
+    const meta = window._buildMeta || window._parsedIDML;
+    if(!meta.imageFrames) meta.imageFrames = [];
+    const before = Object.keys(imageFiles).length;
+    await extractImagesFromPDF(state.idmlPdfBuf, meta, (pg,total)=>{
+      lbl.textContent = `Extracting page ${pg} / ${total}…`;
+    });
+    const after = Object.keys(imageFiles).length;
+    lbl.textContent = `Done — ${after - before} new images extracted (${after} total)`;
+    renderImgLibrary();
+    renderImgList();
+    // Re-run HTML build to embed the newly found images
+    if(after > before && window._parsedIDML){
+      lbl.textContent += ' — rebuilding HTML…';
+      try{
+        const title = $('idml-file-input')?.files?.[0]?.name?.replace(/\.idml$/i,'') || 'document';
+        const {htmlString} = await buildIDMLZip(window._parsedIDML, title);
+        if(htmlString && state.previewFrame){
+          state.previewFrame.srcdoc = htmlString;
+        }
+        lbl.textContent = `Done — ${after} images embedded in HTML`;
+      }catch(e){ console.warn('Rebuild after extract failed:',e); }
+    }
+  }catch(e){
+    lbl.textContent = 'Extraction failed: ' + e.message;
+    console.error(e);
+  }
+  btn.disabled = false;
 }
 
 // Extract actual embedded image XObjects from PDF using PDF.js operator list.
 // Works for both spread-level frames AND story-anchored inline images.
-async function extractImagesFromPDF(pdfBuf, meta){
+async function extractImagesFromPDF(pdfBuf, meta, onProgress){
   if(!pdfBuf) return;
 
-  let targetFiles = (meta.storyImageFiles || []).filter(f => !imageFiles[f]);
-  if(!targetFiles.length) targetFiles = (meta.linkedImageFiles || []).filter(f => !imageFiles[f]);
-  const extractAll = !targetFiles.length;
+  const SCALE = 2.0;
+  const frameMeta = meta.imageFrames || [];
+  const allLinked = [...new Set([
+    ...(meta.storyImageFiles||[]),
+    ...(meta.linkedImageFiles||[]),
+    ...frameMeta.map(f=>f.filename)
+  ])].filter(Boolean);
 
-  // Helper: multiply two 6-element CTM matrices [a,b,c,d,e,f]
+  const stillNeeded = () => allLinked.filter(f => f && !imageFiles[f]);
+  if(!stillNeeded().length) return;
+
   const mulM=(a,b)=>[
     a[0]*b[0]+a[2]*b[1], a[1]*b[0]+a[3]*b[1],
     a[0]*b[2]+a[2]*b[3], a[1]*b[2]+a[3]*b[3],
@@ -1013,130 +1082,140 @@ async function extractImagesFromPDF(pdfBuf, meta){
   try{
     const pdfDoc = await pdfjsLib.getDocument({data: new Uint8Array(pdfBuf)}).promise;
 
-    // Step 1: For each page, collect image XObjects with position (in page points, top-left origin)
-    // allExtracted: [{dataURL, pgNum, x, y, w, h, aspect, imgName}]
-    const allExtracted = [];
-
-    for(let pgNum = 1; pgNum <= pdfDoc.numPages; pgNum++){
+    // Cache rendered canvases to avoid re-rendering the same page
+    const pageCache = {};
+    const renderPage = async (pgNum) => {
+      if(pageCache[pgNum]) return pageCache[pgNum];
       const page = await pdfDoc.getPage(pgNum);
-      const vp = page.getViewport({scale:1.5});
-      const pageH = page.getViewport({scale:1}).height; // raw page height in points
+      const vp   = page.getViewport({scale: SCALE});
+      const canvas = document.createElement('canvas');
+      canvas.width  = Math.round(vp.width);
+      canvas.height = Math.round(vp.height);
+      await page.render({canvasContext: canvas.getContext('2d'), viewport: vp}).promise;
+      pageCache[pgNum] = {canvas, page, vp};
+      return pageCache[pgNum];
+    };
 
-      // Render to canvas first (forces image data into page.objs)
-      const off = document.createElement('canvas');
-      off.width = vp.width; off.height = vp.height;
-      await page.render({canvasContext:off.getContext('2d'), viewport:vp}).promise;
+    const cropRegion = async (pgNum, xPt, yPt, wPt, hPt, pad=3) => {
+      const {canvas} = await renderPage(pgNum);
+      const cx = Math.max(0, Math.round(xPt * SCALE) - pad);
+      const cy = Math.max(0, Math.round(yPt * SCALE) - pad);
+      const cw = Math.min(canvas.width  - cx, Math.round(wPt * SCALE) + pad*2);
+      const ch = Math.min(canvas.height - cy, Math.round(hPt * SCALE) + pad*2);
+      if(cw < 8 || ch < 8) return null;
+      const crop = document.createElement('canvas');
+      crop.width = cw; crop.height = ch;
+      crop.getContext('2d').drawImage(canvas, cx, cy, cw, ch, 0, 0, cw, ch);
+      return crop.toDataURL('image/jpeg', 0.93);
+    };
 
+    // PHASE 1: Coordinate-based crop using IDML frame positions.
+    // Renders the full PDF page and crops the exact region — works for
+    // BOTH raster (PNG/JPG) and vector content (EPS, WMF Form XObjects).
+    for(const fm of frameMeta){
+      if(imageFiles[fm.filename] || !fm.page_num || !fm.widthPt || !fm.heightPt) continue;
+      const dataURL = await cropRegion(fm.page_num, fm.x_pt, fm.y_pt, fm.widthPt, fm.heightPt);
+      if(dataURL) imageFiles[fm.filename] = dataURL;
+    }
+
+    if(!stillNeeded().length){ renderImgList(); return; }
+
+    // PHASE 2: Scan operator lists to find ALL painted visual regions.
+    // Collects Image XObjects (raster) AND Form XObjects (EPS/WMF vector).
+    const allVisualRegions = [];
+
+    for(let pgNum=1; pgNum<=pdfDoc.numPages; pgNum++){
+      const {page} = await renderPage(pgNum);
+      const pageH1 = page.getViewport({scale:1}).height;
       const opList = await page.getOperatorList();
-
-      // Track CTM stack to get each image's position
       const ctmStack = [[1,0,0,1,0,0]];
-      const pageImgPositions = []; // {imgName, x, y, w, h} — PDF top-left coords, in points
 
       for(let i=0; i<opList.fnArray.length; i++){
-        const fn = opList.fnArray[i];
-        const args = opList.argsArray[i];
-        if(fn === pdfjsLib.OPS.save){
+        const fn=opList.fnArray[i], args=opList.argsArray[i];
+        if(fn===pdfjsLib.OPS.save){
           ctmStack.push([...ctmStack[ctmStack.length-1]]);
-        } else if(fn === pdfjsLib.OPS.restore){
+        } else if(fn===pdfjsLib.OPS.restore){
           if(ctmStack.length>1) ctmStack.pop();
-        } else if(fn === pdfjsLib.OPS.transform){
-          ctmStack[ctmStack.length-1] = mulM(ctmStack[ctmStack.length-1], args);
+        } else if(fn===pdfjsLib.OPS.transform){
+          ctmStack[ctmStack.length-1]=mulM(ctmStack[ctmStack.length-1],args);
         } else if(fn===pdfjsLib.OPS.paintImageXObject||fn===pdfjsLib.OPS.paintImageXObjectRepeat||fn===pdfjsLib.OPS.paintInlineImageXObject){
-          const imgName = args[0];
-          const m = ctmStack[ctmStack.length-1]; // [a,b,c,d,e,f]
-          // Image is drawn over unit square; transform maps it to page coords (PDF bottom-left)
-          const imgW = Math.abs(m[0]) || Math.abs(m[2]);
-          const imgH = Math.abs(m[3]) || Math.abs(m[1]);
-          const pdfX = m[4];
-          const pdfY = m[5]; // bottom-left Y in PDF coords
-          // Convert to top-left origin (HTML-style)
-          const x = pdfX;
-          const y = pageH - pdfY - imgH;
-          if(imgName) pageImgPositions.push({imgName, x, y, w:imgW, h:imgH});
+          const m=ctmStack[ctmStack.length-1];
+          const w=Math.abs(m[0])||Math.abs(m[2]);
+          const h=Math.abs(m[3])||Math.abs(m[1]);
+          const x=m[4], y=pageH1-m[5]-h;
+          if(w<20||h<20) continue;
+          let dataURL=null;
+          const imgName=args[0];
+          let imgData=null;
+          try{imgData=page.objs.get(imgName);}catch(e){}
+          if(!imgData){try{imgData=page.commonObjs.get(imgName);}catch(e){}}
+          if(imgData&&imgData.data&&imgData.width&&imgData.height){
+            const ic=document.createElement('canvas');
+            ic.width=imgData.width; ic.height=imgData.height;
+            const ictx=ic.getContext('2d');
+            const idata=ictx.createImageData(imgData.width,imgData.height);
+            const src=imgData.data,dst=idata.data;
+            if(src.length===imgData.width*imgData.height*4) dst.set(src);
+            else if(src.length===imgData.width*imgData.height*3)
+              for(let p=0,q=0;p<src.length;p+=3,q+=4){dst[q]=src[p];dst[q+1]=src[p+1];dst[q+2]=src[p+2];dst[q+3]=255;}
+            ictx.putImageData(idata,0,0);
+            dataURL=ic.toDataURL('image/jpeg',0.93);
+          }
+          allVisualRegions.push({pgNum,x,y,w,h,dataURL});
+        } else if(fn===pdfjsLib.OPS.paintFormXObject){
+          // Form XObjects = EPS/WMF/flowcharts — position only, crop from canvas
+          const m=ctmStack[ctmStack.length-1];
+          const w=Math.abs(m[0])||Math.abs(m[2]);
+          const h=Math.abs(m[3])||Math.abs(m[1]);
+          const x=m[4], y=pageH1-m[5]-h;
+          if(w>=20&&h>=20) allVisualRegions.push({pgNum,x,y,w,h,dataURL:null});
         }
       }
-
-      // Extract image data
-      const seen = new Set();
-      for(const {imgName, x, y, w, h} of pageImgPositions){
-        if(seen.has(imgName)) continue;
-        seen.add(imgName);
-        if(w<20 || h<20) continue; // skip tiny icons
-
-        let imgData=null;
-        try{ imgData=page.objs.get(imgName); }catch(e){}
-        if(!imgData){ try{ imgData=page.commonObjs.get(imgName); }catch(e){} }
-        if(!imgData||!imgData.data||!imgData.width||!imgData.height) continue;
-
-        const ic=document.createElement('canvas');
-        ic.width=imgData.width; ic.height=imgData.height;
-        const ictx=ic.getContext('2d');
-        const idata=ictx.createImageData(imgData.width,imgData.height);
-        const src=imgData.data,dst=idata.data;
-        if(src.length===imgData.width*imgData.height*4){
-          dst.set(src);
-        } else if(src.length===imgData.width*imgData.height*3){
-          for(let p=0,q=0;p<src.length;p+=3,q+=4){dst[q]=src[p];dst[q+1]=src[p+1];dst[q+2]=src[p+2];dst[q+3]=255;}
-        } else continue;
-        ictx.putImageData(idata,0,0);
-        allExtracted.push({
-          dataURL: ic.toDataURL('image/jpeg',0.92),
-          pgNum, x, y, w, h,
-          aspect: w/h,
-          imgName
-        });
-      }
     }
 
-    if(!allExtracted.length) return;
+    // Remove repeated header/footer elements (same size on 3+ pages)
+    const sizeHist={};
+    allVisualRegions.forEach(r=>{
+      const k=`${Math.round(r.w)}_${Math.round(r.h)}`;
+      sizeHist[k]=(sizeHist[k]||0)+1;
+    });
+    const dedupedRegions = allVisualRegions
+      .filter(r => sizeHist[`${Math.round(r.w)}_${Math.round(r.h)}`] <= 2)
+      .sort((a,b)=>a.pgNum-b.pgNum||a.y-b.y);
 
-    if(extractAll){
-      allExtracted.forEach((ex,idx)=>{ const k=`_pdf_img_${idx}.jpg`; if(!imageFiles[k]) imageFiles[k]=ex.dataURL; });
-      renderImgList(); return;
-    }
+    // PHASE 3: Match remaining unresolved images to visual regions.
+    const usedR = new Set();
 
-    // Step 2: Position-based matching — match each IDML image frame to the closest PDF image
-    // imgFrameMeta: [{filename, pageNum, x_pt, y_pt, widthPt, heightPt}]
-    const frameMeta = meta.imageFrames || [];
-    const usedExtr = new Set();
-
-    // First pass: exact position match (same page, center within threshold)
-    for(const fm of frameMeta){
-      if(imageFiles[fm.filename]) continue;
-      const cx_fm = (fm.x_pt||0) + (fm.widthPt||0)/2;
-      const cy_fm = (fm.y_pt||0) + (fm.heightPt||0)/2;
-      let bestIdx=-1, bestDist=Infinity;
-      allExtracted.forEach((ex,i)=>{
-        if(usedExtr.has(i)) return;
-        if(ex.pgNum !== fm.page_num) return;
-        const cx_ex = ex.x + ex.w/2;
-        const cy_ex = ex.y + ex.h/2;
-        const dist = Math.sqrt((cx_fm-cx_ex)**2 + (cy_fm-cy_ex)**2);
-        if(dist<bestDist){ bestDist=dist; bestIdx=i; }
-      });
-      // Accept if center is within 60pts (generous threshold for coordinate rounding)
-      if(bestIdx>=0 && bestDist<60){
-        imageFiles[fm.filename]=allExtracted[bestIdx].dataURL;
-        usedExtr.add(bestIdx);
-      }
-    }
-
-    // Second pass: aspect-ratio fallback for unmatched frames
-    for(const fname of targetFiles){
-      if(imageFiles[fname]) continue;
+    // 3a: Position match for frames whose coordinates we know
+    for(const fname of stillNeeded()){
       const fm = frameMeta.find(f=>f.filename===fname);
-      const targetAspect = fm && fm.widthPt && fm.heightPt ? fm.widthPt/fm.heightPt : null;
-      let bestIdx=-1, bestScore=Infinity;
-      allExtracted.forEach((ex,i)=>{
-        if(usedExtr.has(i)) return;
-        const score = targetAspect!=null ? Math.abs(ex.aspect-targetAspect) : i*0.001;
-        if(score<bestScore){ bestScore=score; bestIdx=i; }
+      if(!fm||!fm.page_num) continue;
+      const cx_fm=fm.x_pt+(fm.widthPt||0)/2, cy_fm=fm.y_pt+(fm.heightPt||0)/2;
+      let bestI=-1,bestD=Infinity;
+      dedupedRegions.forEach((r,i)=>{
+        if(usedR.has(i)||r.pgNum!==fm.page_num) return;
+        const d=Math.hypot(r.x+r.w/2-cx_fm, r.y+r.h/2-cy_fm);
+        if(d<bestD){bestD=d;bestI=i;}
       });
-      if(bestIdx>=0){ imageFiles[fname]=allExtracted[bestIdx].dataURL; usedExtr.add(bestIdx); }
+      if(bestI>=0 && bestD<80){
+        const r=dedupedRegions[bestI];
+        const dataURL=r.dataURL||(await cropRegion(r.pgNum,r.x,r.y,r.w,r.h));
+        if(dataURL){imageFiles[fname]=dataURL; usedR.add(bestI);}
+      }
+    }
+
+    // 3b: Document-order fallback for inline images without known position
+    const stillR = stillNeeded();
+    const unusedR = dedupedRegions.filter((_,i)=>!usedR.has(i));
+    for(let i=0; i<Math.min(stillR.length, unusedR.length); i++){
+      const fname=stillR[i], r=unusedR[i];
+      if(imageFiles[fname]) continue;
+      const dataURL=r.dataURL||(await cropRegion(r.pgNum,r.x,r.y,r.w,r.h));
+      if(dataURL) imageFiles[fname]=dataURL;
     }
 
     renderImgList();
+
   }catch(e){ console.warn('PDF image extraction failed:',e); }
 }
 
@@ -1166,6 +1245,7 @@ async function handleImgFiles(files){
 function renderImgList(){
   const n=Object.keys(imageFiles).length;
   $('idml-img-count').textContent=n>0?n+' loaded':'';
+  renderImgLibrary();
   $('idml-img-list').innerHTML=Object.keys(imageFiles).map(name=>`
     <span class="img-chip">📷 ${esc(name)}
       <button onclick="delete imageFiles[${JSON.stringify(name)}];renderImgList()">×</button>
@@ -1264,12 +1344,15 @@ async function runIDMLConvert(){
     s2Progress('Converting to HTML…',70,'Mapping styles');await tick();
     const title=state.idmlFile.name.replace(/\.idml$/i,'');
     let {zip,meta,matched,unmatched,htmlString}=await buildIDMLZip(parsed,title);
+    window._buildMeta = meta; // expose for manual extract button
 
     // Auto-extract images from PDF if user supplied one
     if(state.idmlPdfBuf && meta){
       s2Progress('Extracting images from PDF…',80,'Rendering pages');await tick();
       const beforeCount=Object.keys(imageFiles).length;
-      await extractImagesFromPDF(state.idmlPdfBuf, meta);
+      await extractImagesFromPDF(state.idmlPdfBuf, meta, (pg,total)=>{
+        s2Progress(`Extracting images from PDF…`,80+Math.round(pg/total*7),`Page ${pg}/${total}`);
+      });
       const afterCount=Object.keys(imageFiles).length;
       if(afterCount>beforeCount){
         // Rebuild HTML now that imageFiles has new entries
