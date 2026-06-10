@@ -1070,8 +1070,10 @@ async function extractImagesFromPDF(pdfBuf, meta, onProgress){
     ...frameMeta.map(f=>f.filename)
   ])].filter(Boolean);
 
+  // extractAll = true when IDML has no linked image filenames (images may be embedded in PDF)
+  const extractAll = allLinked.length === 0;
   const stillNeeded = () => allLinked.filter(f => f && !imageFiles[f]);
-  if(!stillNeeded().length) return;
+  if(!extractAll && !stillNeeded().length) return;
 
   const mulM=(a,b)=>[
     a[0]*b[0]+a[2]*b[1], a[1]*b[0]+a[3]*b[1],
@@ -1112,13 +1114,14 @@ async function extractImagesFromPDF(pdfBuf, meta, onProgress){
     // PHASE 1: Coordinate-based crop using IDML frame positions.
     // Renders the full PDF page and crops the exact region — works for
     // BOTH raster (PNG/JPG) and vector content (EPS, WMF Form XObjects).
-    for(const fm of frameMeta){
-      if(imageFiles[fm.filename] || !fm.page_num || !fm.widthPt || !fm.heightPt) continue;
-      const dataURL = await cropRegion(fm.page_num, fm.x_pt, fm.y_pt, fm.widthPt, fm.heightPt);
-      if(dataURL) imageFiles[fm.filename] = dataURL;
+    if(!extractAll){
+      for(const fm of frameMeta){
+        if(imageFiles[fm.filename] || !fm.page_num || !fm.widthPt || !fm.heightPt) continue;
+        const dataURL = await cropRegion(fm.page_num, fm.x_pt, fm.y_pt, fm.widthPt, fm.heightPt);
+        if(dataURL) imageFiles[fm.filename] = dataURL;
+      }
+      if(!stillNeeded().length){ renderImgList(); return; }
     }
-
-    if(!stillNeeded().length){ renderImgList(); return; }
 
     // PHASE 2: Scan operator lists to find ALL painted visual regions.
     // Collects Image XObjects (raster) AND Form XObjects (EPS/WMF vector).
@@ -1212,6 +1215,25 @@ async function extractImagesFromPDF(pdfBuf, meta, onProgress){
       if(imageFiles[fname]) continue;
       const dataURL=r.dataURL||(await cropRegion(r.pgNum,r.x,r.y,r.w,r.h));
       if(dataURL) imageFiles[fname]=dataURL;
+    }
+
+    // extractAll mode: IDML had no linked filenames — store every visual region
+    // as a synthetic _pdf_img_N key so they still appear in the HTML output.
+    // Also store positional metadata so blocks can be sorted by page/Y.
+    if(extractAll){
+      let idx=0;
+      window._pdfImgMeta = window._pdfImgMeta || {};
+      for(const r of dedupedRegions){
+        const k=`_pdf_img_${idx}`;
+        if(!imageFiles[k]){
+          const dataURL=r.dataURL||(await cropRegion(r.pgNum,r.x,r.y,r.w,r.h));
+          if(dataURL){
+            imageFiles[k]=dataURL;
+            window._pdfImgMeta[k]={pgNum:r.pgNum, x:r.x, y:r.y, w:r.w, h:r.h};
+            idx++;
+          }
+        } else { idx++; }
+      }
     }
 
     renderImgList();
@@ -3699,11 +3721,17 @@ function getOrderedBlocks(parsed) {
     }
   });
   // Also expose any _pdf_img_ synthetic images extracted when no target filenames were known
-  Object.keys(imageFiles).filter(k=>k.startsWith('_pdf_img_')).forEach(k=>{
-    if(!capturedImages.has(k)){
-      allBlocks.push({styleName:'_image_', imageFile:k, spans:[]});
-      capturedImages.add(k);
-    }
+  // Sort by page+Y (stored in window._pdfImgMeta) for correct reading order
+  const pdfImgMeta = (typeof window!=='undefined' && window._pdfImgMeta) || {};
+  const pdfImgKeys = Object.keys(imageFiles)
+    .filter(k=>k.startsWith('_pdf_img_') && !capturedImages.has(k))
+    .sort((a,b)=>{
+      const ma=pdfImgMeta[a]||{pgNum:999,y:999}, mb=pdfImgMeta[b]||{pgNum:999,y:999};
+      return ma.pgNum-mb.pgNum || ma.y-mb.y;
+    });
+  pdfImgKeys.forEach(k=>{
+    allBlocks.push({styleName:'_image_', imageFile:k, spans:[]});
+    capturedImages.add(k);
   });
 
   return allBlocks;
