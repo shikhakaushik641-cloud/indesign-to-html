@@ -3494,13 +3494,23 @@ function getOrderedBlocks(parsed) {
     const frames=spread.frames||[];
 
     // Separate text-frame chains from standalone image/diagram frames
+    // Determine page width for this spread (used to classify narrow/decorative frames)
+    const pgGeo=(parsed.spreadPageGeometry||{})[spread.id]||[];
+    const pageW=pgGeo.length?Math.max(...pgGeo.map(p=>(p.right-p.left)||0)):0;
+
     const textFrameStarts=frames.filter(f=>f.storyRef&&(!f.prev||!fm[f.prev]));
     const imageFrames=frames.filter(f=>f.type==='image'&&f.filename);
     const diagramFrames=frames.filter(f=>f.type==='diagram'&&f.svg);
 
-    // Collect text-frame chains with their Y-position (top of GeometricBounds)
-    const textChains=[]; // [{yTop, blocks:[]}]
-    const walkChain=f=>{
+    const textChains=[];
+    const walkChain_collect=(f,vis,stories)=>{
+      if(!f) return [];
+      const sid=f.storyRef; const out=[];
+      if(sid&&!vis.has(sid)){vis.add(sid);const st=stories[sid];if(st)out.push(...st.blocks);}
+      if(f.next&&fm[f.next]) out.push(...walkChain_collect(fm[f.next],vis,stories));
+      return out;
+    };
+    textFrameStarts.forEach(f=>{
       if(!f) return;
       const sid=f.storyRef;
       const blocks=[];
@@ -3508,7 +3518,6 @@ function getOrderedBlocks(parsed) {
         visitedStories.add(sid);
         const st=sm[sid];
         if(st){
-          // Wrap box-frame content with _box_ markers so blocksToHTML can style it
           if(f.isBox){
             blocks.push({styleName:'_box_start_',spans:[]});
             blocks.push(...st.blocks);
@@ -3520,41 +3529,33 @@ function getOrderedBlocks(parsed) {
       }
       if(f.next&&fm[f.next]) blocks.push(...walkChain_collect(fm[f.next],visitedStories,sm));
       const yTop=parseIDMLY(f.bounds);
-      textChains.push({yTop,blocks});
-    };
-    const walkChain_collect=(f,vis,stories)=>{
-      if(!f) return [];
-      const sid=f.storyRef; const out=[];
-      if(sid&&!vis.has(sid)){vis.add(sid);const st=stories[sid];if(st)out.push(...st.blocks);}
-      if(f.next&&fm[f.next]) out.push(...walkChain_collect(fm[f.next],vis,stories));
-      return out;
-    };
-    textFrameStarts.forEach(walkChain);
+      const fw=(()=>{ if(!f.bounds) return 0; const p=String(f.bounds).trim().split(/\s+/).map(Number); return p.length>=4?Math.abs(p[3]-p[1]):0; })();
+      const isDecorative = pageW>50 && fw<pageW*0.25 && !f.next && blocks.length<=8;
+      textChains.push({yTop,blocks,isDecorative});
+    });
 
-    // Build image blocks for standalone image frames
     const imgBlocks=imageFrames.map(f=>({
-      styleName:'_image_',
-      imageFile:f.filename,
-      yTop:parseIDMLY(f.bounds)||9999,
-      spans:[]
+      styleName:'_image_', imageFile:f.filename,
+      yTop:parseIDMLY(f.bounds)||9999, spans:[]
     }));
-
-    // Build diagram blocks for Group SVG frames
     const dgrBlocks=diagramFrames.map(f=>({
-      styleName:'_diagram_',
-      svg:f.svg,
-      yTop:parseIDMLY(f.bounds)||9999,
-      spans:[]
+      styleName:'_diagram_', svg:f.svg,
+      yTop:parseIDMLY(f.bounds)||9999, spans:[]
     }));
 
-    // Merge all segments by Y position (top-to-bottom reading order)
-    const segments=[
-      ...textChains.map(c=>({yTop:c.yTop,blocks:c.blocks})),
+    // Main segments: non-decorative text chains + images/diagrams, sorted by Y
+    const mainSegs=[
+      ...textChains.filter(c=>!c.isDecorative).map(c=>({yTop:c.yTop,blocks:c.blocks})),
       ...imgBlocks.map(ib=>({yTop:ib.yTop,blocks:[{styleName:'_image_',imageFile:ib.imageFile,spans:[]}]})),
       ...dgrBlocks.map(db=>({yTop:db.yTop,blocks:[{styleName:'_diagram_',svg:db.svg,spans:[]}]})),
     ];
-    segments.sort((a,b)=>a.yTop-b.yTop);
-    segments.forEach(seg=>allBlocks.push(...seg.blocks));
+    mainSegs.sort((a,b)=>a.yTop-b.yTop);
+    mainSegs.forEach(seg=>allBlocks.push(...seg.blocks));
+
+    // Decorative/sidebar frames: appended after main content, sorted by Y
+    const sideSegs=textChains.filter(c=>c.isDecorative).map(c=>({yTop:c.yTop,blocks:c.blocks}));
+    sideSegs.sort((a,b)=>a.yTop-b.yTop);
+    sideSegs.forEach(seg=>allBlocks.push(...seg.blocks));
   }
 
   // Append any stories not reached via spread frames
